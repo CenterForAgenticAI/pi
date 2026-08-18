@@ -58,6 +58,7 @@ import type {
 	SessionBeforeSwitchResult,
 	SessionBeforeTreeResult,
 	SessionShutdownEvent,
+	ShortcutConflict,
 	ToolCallEvent,
 	ToolCallEventResult,
 	ToolResultEvent,
@@ -293,6 +294,9 @@ export class ExtensionRunner {
 	private reloadHandler: ReloadHandler = async () => {};
 	private shutdownHandler: ShutdownHandler = () => {};
 	private shortcutDiagnostics: ResourceDiagnostic[] = [];
+	/** Undefined until shortcuts have been resolved once. */
+	private shortcutConflicts: ShortcutConflict[] | undefined;
+	private resolveKeybindings: (() => KeybindingsConfig) | undefined;
 	private commandDiagnostics: ResourceDiagnostic[] = [];
 	private staleMessage: string | undefined;
 
@@ -332,6 +336,8 @@ export class ExtensionRunner {
 		this.runtime.setActiveTools = actions.setActiveTools;
 		this.runtime.refreshTools = actions.refreshTools;
 		this.runtime.getCommands = actions.getCommands;
+		// Shortcut conflicts are the runner's own state, so no mode has to supply this action.
+		this.runtime.getShortcutConflicts = () => this.getShortcutConflicts();
 		this.runtime.setModel = actions.setModel;
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
@@ -491,24 +497,42 @@ export class ExtensionRunner {
 		return new Map(this.runtime.flagValues);
 	}
 
-	getShortcuts(resolvedKeybindings: KeybindingsConfig): Map<KeyId, ExtensionShortcut> {
-		this.shortcutDiagnostics = [];
+	/**
+	 * Resolve every extension shortcut against the built-in keybindings.
+	 *
+	 * Collects the diagnostics and the structured conflicts as it goes, without
+	 * printing anything, so a caller that only wants the conflicts does not
+	 * produce a second round of warnings.
+	 */
+	private resolveShortcuts(resolvedKeybindings: KeybindingsConfig): {
+		shortcuts: Map<KeyId, ExtensionShortcut>;
+		diagnostics: ResourceDiagnostic[];
+		conflicts: ShortcutConflict[];
+	} {
 		const builtinKeybindings = buildBuiltinKeybindings(resolvedKeybindings);
 		const extensionShortcuts = new Map<KeyId, ExtensionShortcut>();
+		const diagnostics: ResourceDiagnostic[] = [];
+		const conflicts: ShortcutConflict[] = [];
 
 		const addDiagnostic = (message: string, extensionPath: string) => {
-			this.shortcutDiagnostics.push({ type: "warning", message, path: extensionPath });
-			if (!this.hasUI()) {
-				console.warn(message);
-			}
+			diagnostics.push({ type: "warning", message, path: extensionPath });
 		};
 
 		for (const ext of this.extensions) {
 			for (const [key, shortcut] of ext.shortcuts) {
 				const normalizedKey = key.toLowerCase() as KeyId;
+				const declared = shortcut.overridesBuiltin === true;
 
 				const builtInKeybinding = builtinKeybindings[normalizedKey];
 				if (builtInKeybinding?.restrictOverride === true) {
+					conflicts.push({
+						kind: "builtin-reserved",
+						key: normalizedKey,
+						extensionPath: shortcut.extensionPath,
+						keybinding: builtInKeybinding.keybinding,
+						active: false,
+						declared,
+					});
 					addDiagnostic(
 						`Extension shortcut '${key}' from ${shortcut.extensionPath} conflicts with built-in shortcut. Skipping.`,
 						shortcut.extensionPath,
@@ -517,14 +541,34 @@ export class ExtensionRunner {
 				}
 
 				if (builtInKeybinding?.restrictOverride === false) {
-					addDiagnostic(
-						`Extension shortcut conflict: '${key}' is built-in shortcut for ${builtInKeybinding.keybinding} and ${shortcut.extensionPath}. Using ${shortcut.extensionPath}.`,
-						shortcut.extensionPath,
-					);
+					conflicts.push({
+						kind: "builtin-override",
+						key: normalizedKey,
+						extensionPath: shortcut.extensionPath,
+						keybinding: builtInKeybinding.keybinding,
+						active: true,
+						declared,
+					});
+					// A declared override is the outcome the extension asked for, so it is
+					// reported through getShortcutConflicts() but never warned about.
+					if (!declared) {
+						addDiagnostic(
+							`Extension shortcut conflict: '${key}' is built-in shortcut for ${builtInKeybinding.keybinding} and ${shortcut.extensionPath}. Using ${shortcut.extensionPath}.`,
+							shortcut.extensionPath,
+						);
+					}
 				}
 
 				const existingExtensionShortcut = extensionShortcuts.get(normalizedKey);
 				if (existingExtensionShortcut) {
+					conflicts.push({
+						kind: "extension-duplicate",
+						key: normalizedKey,
+						extensionPath: shortcut.extensionPath,
+						previousExtensionPath: existingExtensionShortcut.extensionPath,
+						active: true,
+						declared,
+					});
 					addDiagnostic(
 						`Extension shortcut conflict: '${key}' registered by both ${existingExtensionShortcut.extensionPath} and ${shortcut.extensionPath}. Using ${shortcut.extensionPath}.`,
 						shortcut.extensionPath,
@@ -533,11 +577,42 @@ export class ExtensionRunner {
 				extensionShortcuts.set(normalizedKey, shortcut);
 			}
 		}
-		return extensionShortcuts;
+		return { shortcuts: extensionShortcuts, diagnostics, conflicts };
+	}
+
+	getShortcuts(resolvedKeybindings: KeybindingsConfig): Map<KeyId, ExtensionShortcut> {
+		const { shortcuts, diagnostics, conflicts } = this.resolveShortcuts(resolvedKeybindings);
+		this.shortcutDiagnostics = diagnostics;
+		this.shortcutConflicts = conflicts;
+		if (!this.hasUI()) {
+			for (const diagnostic of diagnostics) {
+				console.warn(diagnostic.message);
+			}
+		}
+		return shortcuts;
 	}
 
 	getShortcutDiagnostics(): ResourceDiagnostic[] {
 		return this.shortcutDiagnostics;
+	}
+
+	/**
+	 * Let this runner resolve shortcuts on demand.
+	 *
+	 * A mode that owns the keybindings sets this so `getShortcutConflicts()`
+	 * answers before the mode has wired shortcuts up. Without it, session_start
+	 * handlers would see an empty list: interactive mode binds extensions, and
+	 * therefore emits session_start, before it calls `getShortcuts()`.
+	 */
+	setKeybindingsResolver(resolve: () => KeybindingsConfig): void {
+		this.resolveKeybindings = resolve;
+	}
+
+	getShortcutConflicts(): ShortcutConflict[] {
+		if (this.shortcutConflicts === undefined && this.resolveKeybindings) {
+			this.shortcutConflicts = this.resolveShortcuts(this.resolveKeybindings()).conflicts;
+		}
+		return this.shortcutConflicts ? [...this.shortcutConflicts] : [];
 	}
 
 	invalidate(

@@ -83,6 +83,7 @@ export type {
 	GetActiveToolsHandler,
 	GetAllToolsHandler,
 	GetCommandsHandler,
+	GetShortcutConflictsHandler,
 	GetThinkingLevelHandler,
 	GrepToolCallEvent,
 	GrepToolResultEvent,
@@ -145,6 +146,8 @@ export type {
 	SetLabelHandler,
 	SetModelHandler,
 	SetThinkingLevelHandler,
+	ShortcutConflict,
+	ShortcutConflictKind,
 	TerminalInputHandler,
 	// Events - Tool
 	ToolCallEvent,

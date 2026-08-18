@@ -1630,6 +1630,53 @@ pi.registerShortcut("ctrl+shift+p", {
 });
 ```
 
+If the key is already bound to a built-in action, Pi resolves the collision two ways:
+
+- **Reserved built-in** (`app.interrupt`, `app.exit`, `tui.input.submit`, and the rest of the editor-global set): Pi keeps the built-in, skips your shortcut, and warns.
+- **Any other built-in**: Pi runs your shortcut, the built-in loses the key, and Pi warns.
+
+The second warning repeats at every start, including for an override you meant to make.
+Set `overridesBuiltin` to declare it and Pi stops warning. Reserved keys are unaffected:
+Pi still refuses them and still warns.
+
+```typescript
+pi.registerShortcut("ctrl+v", {
+  description: "Paste from the remote machine",
+  overridesBuiltin: true, // takes ctrl+v from app.clipboard.pasteImage on purpose
+  handler: async (ctx) => {
+    ctx.ui.pasteToEditor(await readRemoteClipboard());
+  },
+});
+```
+
+A user cannot rebind your shortcut: `keybindings.json` only holds Pi's own keybinding ids.
+To free a key they have to move the built-in, so keep an override deliberate and documented.
+
+### pi.getShortcutConflicts()
+
+Every shortcut collision Pi resolved for the loaded extensions, including declared
+overrides. Use it to explain a collision, or to offer the user the `keybindings.json` edit
+that frees the key.
+
+```typescript
+for (const conflict of pi.getShortcutConflicts()) {
+  // "builtin-override" | "builtin-reserved" | "extension-duplicate"
+  console.log(conflict.kind, conflict.key, conflict.keybinding, conflict.active);
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `kind` | `builtin-override` (extension wins), `builtin-reserved` (built-in wins, shortcut skipped), `extension-duplicate` (last extension loaded wins) |
+| `key` | The contested key, lowercased |
+| `extensionPath` | Extension holding the key after resolution, or the skipped one for `builtin-reserved` |
+| `keybinding` | Built-in keybinding id, for the two built-in kinds |
+| `previousExtensionPath` | Extension that lost the key, for `extension-duplicate` |
+| `active` | Whether the extension's handler runs for this key |
+| `declared` | Whether the extension set `overridesBuiltin` |
+
+Returns an empty array in a mode that never resolves shortcuts, such as print mode.
+
 ### pi.registerFlag(name, options)
 
 Register a CLI flag.

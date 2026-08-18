@@ -1281,9 +1281,26 @@ export interface ExtensionAPI {
 		shortcut: KeyId,
 		options: {
 			description?: string;
+			/**
+			 * Declare that taking this key from a built-in action is intentional.
+			 *
+			 * Pi then stops warning about the collision, which otherwise repeats at
+			 * every start for an override the extension meant to make. Reserved keys
+			 * are unaffected: Pi still refuses them and still warns.
+			 */
+			overridesBuiltin?: boolean;
 			handler: (ctx: ExtensionContext) => Promise<void> | void;
 		},
 	): void;
+
+	/**
+	 * Shortcut collisions Pi resolved for the loaded extensions.
+	 *
+	 * Includes declared overrides, so an extension can report or repair a
+	 * collision Pi no longer warns about. Empty in a mode that never resolves
+	 * shortcuts, such as print mode.
+	 */
+	getShortcutConflicts(): ShortcutConflict[];
 
 	/** Register a CLI flag. */
 	registerFlag(
@@ -1573,6 +1590,39 @@ export interface ExtensionShortcut {
 	description?: string;
 	handler: (ctx: ExtensionContext) => Promise<void> | void;
 	extensionPath: string;
+	/** Set when the extension declared that taking the key from a built-in is intentional. */
+	overridesBuiltin?: boolean;
+}
+
+/** How Pi resolved a collision over one shortcut key. */
+export type ShortcutConflictKind =
+	/** The extension runs and the built-in loses the key. */
+	| "builtin-override"
+	/** The key is reserved for a built-in, so the extension shortcut is skipped. */
+	| "builtin-reserved"
+	/** Two extensions registered the key; the last one loaded runs. */
+	| "extension-duplicate";
+
+/**
+ * One shortcut collision, as Pi resolved it.
+ *
+ * Reported for every collision, including a declared override, so an extension
+ * can explain the situation even when Pi no longer warns about it.
+ */
+export interface ShortcutConflict {
+	kind: ShortcutConflictKind;
+	/** The contested key, lowercased. */
+	key: KeyId;
+	/** Extension holding the key after resolution, or the skipped one for `builtin-reserved`. */
+	extensionPath: string;
+	/** Built-in keybinding id, for the two built-in kinds. */
+	keybinding?: string;
+	/** Extension that lost the key, for `extension-duplicate`. */
+	previousExtensionPath?: string;
+	/** Whether the extension's handler runs for this key. */
+	active: boolean;
+	/** Whether the extension declared the override with `overridesBuiltin`. */
+	declared: boolean;
 }
 
 type HandlerFn = (...args: unknown[]) => Promise<unknown>;
@@ -1604,6 +1654,8 @@ export type GetAllToolsHandler = () => ToolInfo[];
 
 export type GetCommandsHandler = () => SlashCommandInfo[];
 
+export type GetShortcutConflictsHandler = () => ShortcutConflict[];
+
 export type SetActiveToolsHandler = (toolNames: string[]) => void;
 
 export type RefreshToolsHandler = () => void;
@@ -1622,6 +1674,8 @@ export type SetLabelHandler = (entryId: string, label: string | undefined) => vo
  */
 export interface ExtensionRuntimeState {
 	flagValues: Map<string, boolean | string>;
+	/** Shortcut collisions the runner resolved. Runner-owned, so no mode supplies it. */
+	getShortcutConflicts: GetShortcutConflictsHandler;
 	/** Legacy provider-config registrations queued during extension loading, processed when runner binds. */
 	pendingProviderRegistrations: Array<{ name: string; config: ProviderConfig; extensionPath: string }>;
 	/** Native pi-ai provider registrations queued during extension loading, processed when runner binds. */
