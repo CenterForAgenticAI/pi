@@ -42,6 +42,7 @@ const ENV_KEYS = [
 	"CMUX_WORKSPACE_ID",
 	"WARP_SESSION_ID",
 	"WARP_TERMINAL_SESSION_UUID",
+	"HERDR_ENV",
 ] as const;
 
 function withEnv(overrides: Record<string, string | undefined>, fn: () => void): void {
@@ -250,6 +251,14 @@ describe("detectCapabilities", () => {
 		withEnv({ TERM: "screen-256color" }, () => {
 			const caps = detectCapabilities();
 			assert.strictEqual(caps.hyperlinks, false);
+			assert.strictEqual(caps.images, null);
+		});
+	});
+
+	it("enables hyperlinks under Herdr (HERDR_ENV=1)", () => {
+		withEnv({ HERDR_ENV: "1", TERM: "xterm-256color" }, () => {
+			const caps = detectCapabilities();
+			assert.strictEqual(caps.hyperlinks, true);
 			assert.strictEqual(caps.images, null);
 		});
 	});

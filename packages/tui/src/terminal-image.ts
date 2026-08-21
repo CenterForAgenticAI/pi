@@ -84,6 +84,13 @@ export function detectCapabilities(tmuxForwardsHyperlink: () => boolean = probeT
 		return { images: null, trueColor: hasTrueColorHint, hyperlinks: false };
 	}
 
+	// Herdr multiplexer preserves OSC 8 hyperlinks (it embeds libghostty) but does
+	// not advertise hyperlink capability to the app via env (herdrdev/herdr#3069),
+	// so detect it directly and emit OSC 8. Image protocols are left off to be safe.
+	if (process.env.HERDR_ENV === "1") {
+		return { images: null, trueColor: true, hyperlinks: true };
+	}
+
 	if (process.env.KITTY_WINDOW_ID || termProgram === "kitty") {
 		return { images: "kitty", trueColor: true, hyperlinks: true };
 	}
