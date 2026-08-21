@@ -1,5 +1,6 @@
 import assert from "node:assert";
 import { describe, it } from "node:test";
+import { hyperlink } from "../src/terminal-image.ts";
 import { visibleWidth, wrapTextWithAnsi } from "../src/utils.ts";
 
 describe("wrapTextWithAnsi", () => {
@@ -262,5 +263,26 @@ describe("wrapTextWithAnsi with OSC 8 hyperlinks", () => {
 		const closeCount = (lines[0].match(/\x1b\]8;;\x1b\\/g) ?? []).length;
 		assert.strictEqual(openCount, 1);
 		assert.strictEqual(closeCount, 1);
+	});
+
+	it("keeps hyperlink()'s id= on every wrapped row so the link stays one target", () => {
+		// Regression for wrapped links losing their target across a line break
+		// (herdrdev/herdr#1282): every physical row must carry the same id= and url.
+		const url = "https://example.com/some/long/path";
+		const input = hyperlink("0123456789ABCDEFGHIJ", url);
+		const idMatch = input.match(/\x1b\]8;id=([0-9a-f]+);/);
+		assert.ok(idMatch, "hyperlink() should emit an id=");
+		const id = idMatch![1];
+
+		const lines = wrapTextWithAnsi(input, 6);
+		assert.ok(lines.length > 1, "input should wrap across multiple lines");
+		for (const line of lines) {
+			const stripped = line.replace(/\x1b\]8;[^\x1b]*\x1b\\/g, "").replace(/\x1b\[[0-9;]*m/g, "");
+			if (stripped.trim().length === 0) continue;
+			assert.ok(
+				line.includes(`\x1b]8;id=${id};${url}\x1b\\`),
+				`Line "${line}" does not re-open the hyperlink with the same id= and url`,
+			);
+		}
 	});
 });

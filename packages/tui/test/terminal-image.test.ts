@@ -571,13 +571,13 @@ describe("imageFallback", () => {
 		try {
 			const abs = join(homedir(), ".pi", "agent", "shot.png");
 			const result = imageFallback("image/png", { widthPx: 10, heightPx: 10 }, abs);
-			assert.ok(result.includes("\x1b]8;;file://"), "expected OSC 8 file link");
+			assert.match(result, /\x1b\]8;id=[0-9a-f]+;file:\/\//, "expected OSC 8 file link with id");
 			assert.ok(
 				result.includes(abs.replaceAll("\\", "/")) || result.includes(abs),
 				"file URL should target absolute path",
 			);
 			// Visible text must use ~/... not the expanded home path.
-			const visible = result.replace(/\x1b\]8;;.*?\x1b\\/g, "");
+			const visible = result.replace(/\x1b\]8;.*?\x1b\\/g, "");
 			assert.strictEqual(visible, "[Image: ~/.pi/agent/shot.png [image/png] 10x10]");
 		} finally {
 			resetCapabilitiesCache();
@@ -606,27 +606,45 @@ describe("imageFallback", () => {
 });
 
 describe("hyperlink", () => {
-	it("wraps text in OSC 8 open and close sequences", () => {
+	it("wraps text in OSC 8 open and close sequences with a URL-derived id", () => {
 		const result = hyperlink("click me", "https://example.com");
-		assert.strictEqual(result, "\x1b]8;;https://example.com\x1b\\click me\x1b]8;;\x1b\\");
+		assert.match(result, /^\x1b\]8;id=[0-9a-f]+;https:\/\/example\.com\x1b\\click me\x1b\]8;;\x1b\\$/);
 	});
 
 	it("preserves ANSI styling inside the hyperlink", () => {
 		const styled = "\x1b[4m\x1b[34mclick me\x1b[0m";
 		const result = hyperlink(styled, "https://example.com");
-		assert.ok(result.startsWith("\x1b]8;;https://example.com\x1b\\"));
+		assert.match(result, /^\x1b\]8;id=[0-9a-f]+;https:\/\/example\.com\x1b\\/);
 		assert.ok(result.includes(styled));
 		assert.ok(result.endsWith("\x1b]8;;\x1b\\"));
 	});
 
 	it("works with empty text", () => {
 		const result = hyperlink("", "https://example.com");
-		assert.strictEqual(result, "\x1b]8;;https://example.com\x1b\\\x1b]8;;\x1b\\");
+		assert.match(result, /^\x1b\]8;id=[0-9a-f]+;https:\/\/example\.com\x1b\\\x1b\]8;;\x1b\\$/);
 	});
 
 	it("works with file:// URIs", () => {
 		const result = hyperlink("README.md", "file:///home/user/README.md");
 		assert.ok(result.includes("file:///home/user/README.md"));
 		assert.ok(result.includes("README.md"));
+	});
+
+	it("emits a URL-derived id: stable per URL, distinct across URLs", () => {
+		const idOf = (s: string): string => {
+			const m = s.match(/^\x1b\]8;id=([0-9a-f]+);/);
+			assert.ok(m, `expected an OSC 8 id in ${JSON.stringify(s)}`);
+			return m![1];
+		};
+		// Same URL -> same id, so a terminal joins a link's wrapped rows into one link.
+		assert.strictEqual(
+			idOf(hyperlink("one", "https://example.com/a")),
+			idOf(hyperlink("two", "https://example.com/a")),
+		);
+		// Different URL -> different id.
+		assert.notStrictEqual(
+			idOf(hyperlink("one", "https://example.com/a")),
+			idOf(hyperlink("three", "https://example.com/b")),
+		);
 	});
 });

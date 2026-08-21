@@ -1542,7 +1542,11 @@ bar`,
 			const joined = lines.join("");
 
 			// OSC 8 open: ESC ] 8 ; ; <url> ESC \
-			assert.ok(joined.includes("\x1b]8;;https://example.com\x1b\\"), "Should contain OSC 8 open sequence");
+			assert.match(
+				joined,
+				/\x1b\]8;id=[0-9a-f]+;https:\/\/example\.com\x1b\\/,
+				"Should contain OSC 8 open sequence with id",
+			);
 			// OSC 8 close: ESC ] 8 ; ; ESC \
 			assert.ok(joined.includes("\x1b]8;;\x1b\\"), "Should contain OSC 8 close sequence");
 			// Visible text is present
@@ -1550,7 +1554,7 @@ bar`,
 			assert.ok(plainLines.join("").includes("click here"), "Should contain link text");
 			// URL is NOT printed inline as plain text
 			const rawPlain = lines.map((line) =>
-				line.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "").replace(/\x1b\[[0-9;]*m/g, ""),
+				line.replace(/\x1b\]8;[^\x1b]*\x1b\\/g, "").replace(/\x1b\[[0-9;]*m/g, ""),
 			);
 			assert.ok(!rawPlain.join("").includes("(https://example.com)"), "URL should not appear inline in parentheses");
 		});
@@ -1562,8 +1566,9 @@ bar`,
 			const lines = markdown.render(80);
 			const joined = lines.join("");
 
-			assert.ok(
-				joined.includes("\x1b]8;;mailto:test@example.com\x1b\\"),
+			assert.match(
+				joined,
+				/\x1b\]8;id=[0-9a-f]+;mailto:test@example\.com\x1b\\/,
 				"Should contain OSC 8 open with mailto URL",
 			);
 			assert.ok(joined.includes("\x1b]8;;\x1b\\"), "Should contain OSC 8 close sequence");
@@ -1576,10 +1581,10 @@ bar`,
 			const lines = markdown.render(80);
 			const joined = lines.join("");
 
-			assert.ok(joined.includes("\x1b]8;;https://example.com\x1b\\"), "Should contain OSC 8 hyperlink");
+			assert.match(joined, /\x1b\]8;id=[0-9a-f]+;https:\/\/example\.com\x1b\\/, "Should contain OSC 8 hyperlink");
 			// URL should not also appear as raw parenthetical text
 			const rawPlain = lines.map((line) =>
-				line.replace(/\x1b\]8;;[^\x1b]*\x1b\\/g, "").replace(/\x1b\[[0-9;]*m/g, ""),
+				line.replace(/\x1b\]8;[^\x1b]*\x1b\\/g, "").replace(/\x1b\[[0-9;]*m/g, ""),
 			);
 			assert.ok(!rawPlain.join("").includes("(https://example.com)"), "URL should not appear twice");
 		});

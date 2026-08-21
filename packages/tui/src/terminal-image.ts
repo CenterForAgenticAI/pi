@@ -614,17 +614,45 @@ export function renderImage(
 }
 
 /**
+ * Deterministic short id for an OSC 8 hyperlink, derived from its URL.
+ *
+ * A shared `id` tells the terminal that cells belonging to the same link are one
+ * hyperlink even when they are not adjacent — in particular when the link's
+ * visible text wraps across several rows. Without an id, a terminal (or a
+ * multiplexer such as Herdr) treats each wrapped row as a separate link, so the
+ * highlight and the click target stop at the line break (see the OSC 8 `id=`
+ * parameter). Deriving the id from the URL keeps this function pure and gives
+ * every row of one link the same id; the line-wrap logic in utils.ts reopens the
+ * link on each new row and preserves the id.
+ */
+function osc8LinkId(url: string): string {
+	// FNV-1a 32-bit, hex. Non-cryptographic; it only needs to distinguish the few
+	// distinct URLs on screen at once. Terminals key a link on (id, url) together,
+	// so even an id collision cannot point a click at the wrong URL.
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < url.length; i++) {
+		hash ^= url.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193);
+	}
+	return (hash >>> 0).toString(16);
+}
+
+/**
  * Wrap text in an OSC 8 hyperlink sequence.
  * The text is rendered as a clickable hyperlink in terminals that support OSC 8
  * (Ghostty, Kitty, WezTerm, iTerm2, VSCode, and others).
  * In terminals that do not support OSC 8, the escape sequences are ignored
  * and only the plain text is displayed.
  *
+ * The open sequence carries an `id=` derived from the URL so a link whose text
+ * wraps across lines stays a single clickable link with one target, instead of
+ * breaking at each wrap.
+ *
  * @param text - The visible text to display
  * @param url - The URL to link to
  */
 export function hyperlink(text: string, url: string): string {
-	return `\x1b]8;;${url}\x1b\\${text}\x1b]8;;\x1b\\`;
+	return `\x1b]8;id=${osc8LinkId(url)};${url}\x1b\\${text}\x1b]8;;\x1b\\`;
 }
 
 /** Shorten home-prefixed absolute paths to ~/... for compact display. */
