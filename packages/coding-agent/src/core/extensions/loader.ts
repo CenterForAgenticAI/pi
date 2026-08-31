@@ -199,6 +199,8 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		// registerTool() is valid during extension load; refresh is only needed post-bind.
 		refreshTools: () => {},
 		getCommands: notInitialized,
+		// Shortcut resolution happens in the runner, so an unbound runtime has no conflicts to report.
+		getShortcutConflicts: () => [],
 		setModel: () => Promise.reject(new Error("Extension runtime not initialized")),
 		getThinkingLevel: notInitialized,
 		setThinkingLevel: notInitialized,
@@ -286,6 +288,7 @@ function createExtensionAPI(
 			shortcut: KeyId,
 			options: {
 				description?: string;
+				overridesBuiltin?: boolean;
 				handler: (ctx: import("./types.ts").ExtensionContext) => Promise<void> | void;
 			},
 		): void {
@@ -386,6 +389,11 @@ function createExtensionAPI(
 		getCommands() {
 			runtime.assertActive();
 			return runtime.getCommands();
+		},
+
+		getShortcutConflicts() {
+			runtime.assertActive();
+			return runtime.getShortcutConflicts();
 		},
 
 		setModel(model) {

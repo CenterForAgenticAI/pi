@@ -363,6 +363,140 @@ describe("ExtensionRunner", () => {
 
 			warnSpy.mockRestore();
 		});
+
+		it("does not warn when the extension declares the built-in override", async () => {
+			const pasteImageKey = Array.isArray(defaultKeybindings["app.clipboard.pasteImage"])
+				? (defaultKeybindings["app.clipboard.pasteImage"][0] ?? "")
+				: defaultKeybindings["app.clipboard.pasteImage"];
+			const extCode = `
+				export default function(pi) {
+					pi.registerShortcut("${pasteImageKey}", {
+						description: "Intentional override",
+						overridesBuiltin: true,
+						handler: async () => {},
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "declared-override.ts"), extCode);
+
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			const shortcuts = runner.getShortcuts(defaultKeybindings);
+
+			expect(warnSpy).not.toHaveBeenCalled();
+			expect(runner.getShortcutDiagnostics()).toEqual([]);
+			expect(shortcuts.has(pasteImageKey as KeyId)).toBe(true);
+			expect(runner.getShortcutConflicts()).toEqual([
+				expect.objectContaining({
+					kind: "builtin-override",
+					key: pasteImageKey,
+					keybinding: "app.clipboard.pasteImage",
+					active: true,
+					declared: true,
+				}),
+			]);
+
+			warnSpy.mockRestore();
+		});
+
+		it("still refuses a reserved key when the extension declares the override", async () => {
+			const extCode = `
+				export default function(pi) {
+					pi.registerShortcut("ctrl+c", {
+						description: "Declared but reserved",
+						overridesBuiltin: true,
+						handler: async () => {},
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "declared-reserved.ts"), extCode);
+
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			const shortcuts = runner.getShortcuts(defaultKeybindings);
+
+			expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("conflicts with built-in"));
+			expect(shortcuts.has("ctrl+c")).toBe(false);
+			expect(runner.getShortcutConflicts()).toEqual([
+				expect.objectContaining({ kind: "builtin-reserved", key: "ctrl+c", active: false, declared: true }),
+			]);
+
+			warnSpy.mockRestore();
+		});
+
+		it("reports both extensions when two claim one key", async () => {
+			const extCode = (label: string) => `
+				export default function(pi) {
+					pi.registerShortcut("ctrl+shift+x", {
+						description: "${label}",
+						handler: async () => {},
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "dup-a.ts"), extCode("first"));
+			fs.writeFileSync(path.join(extensionsDir, "dup-b.ts"), extCode("second"));
+
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+			runner.getShortcuts(defaultKeybindings);
+
+			const conflicts = runner.getShortcutConflicts();
+			expect(conflicts).toHaveLength(1);
+			expect(conflicts[0]?.kind).toBe("extension-duplicate");
+			expect(conflicts[0]?.extensionPath).toContain("dup-b.ts");
+			expect(conflicts[0]?.previousExtensionPath).toContain("dup-a.ts");
+
+			warnSpy.mockRestore();
+		});
+
+		it("resolves conflicts on demand before shortcuts are wired up", async () => {
+			const pasteImageKey = Array.isArray(defaultKeybindings["app.clipboard.pasteImage"])
+				? (defaultKeybindings["app.clipboard.pasteImage"][0] ?? "")
+				: defaultKeybindings["app.clipboard.pasteImage"];
+			const extCode = `
+				export default function(pi) {
+					pi.registerShortcut("${pasteImageKey}", {
+						description: "Undeclared override",
+						handler: async () => {},
+					});
+				}
+			`;
+			fs.writeFileSync(path.join(extensionsDir, "lazy.ts"), extCode);
+
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+			const result = await discoverAndLoadExtensions([], tempDir, tempDir);
+			const runner = new ExtensionRunner(result.extensions, result.runtime, tempDir, sessionManager, modelRegistry);
+
+			// No resolver and no getShortcuts() call yet: nothing has been resolved.
+			expect(runner.getShortcutConflicts()).toEqual([]);
+
+			runner.setKeybindingsResolver(() => defaultKeybindings);
+			const conflicts = runner.getShortcutConflicts();
+
+			expect(conflicts).toEqual([
+				expect.objectContaining({
+					kind: "builtin-override",
+					keybinding: "app.clipboard.pasteImage",
+					declared: false,
+				}),
+			]);
+			// Resolving for the conflict list alone must not warn; getShortcuts() still does.
+			expect(warnSpy).not.toHaveBeenCalled();
+
+			runner.getShortcuts(defaultKeybindings);
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringContaining("built-in shortcut for app.clipboard.pasteImage"),
+			);
+
+			warnSpy.mockRestore();
+		});
 	});
 
 	describe("tool collection", () => {

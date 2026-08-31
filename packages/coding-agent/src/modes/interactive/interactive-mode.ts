@@ -1896,6 +1896,9 @@ export class InteractiveMode {
 	 */
 	private async bindCurrentSessionExtensions(): Promise<void> {
 		const uiContext = this.createExtensionUIContext();
+		// Set before binding, because binding emits session_start and a handler may ask
+		// for the shortcut conflicts before setupExtensionShortcuts() has run.
+		this.session.extensionRunner.setKeybindingsResolver(() => this.keybindings.getEffectiveConfig());
 		await this.session.bindExtensions({
 			uiContext,
 			mode: "tui",
