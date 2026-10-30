@@ -30,8 +30,8 @@ export class RegistryContribution implements Dependent {
 	/** The registry version its contributor was built against. */
 	readonly version: number;
 	readonly #content: ContributionContent;
-	/** The last adaptation of an older contribution: the value it was made from and its result. */
-	#adapted: { readonly from: unknown; readonly value: unknown } | undefined;
+	/** The last adaptation of an older contribution: the value and adapter it was made from, and its result. */
+	#adapted: { readonly from: unknown; readonly adapter: (old: never) => unknown; readonly value: unknown } | undefined;
 	#entry: RegistryEntry<unknown> | undefined;
 	/** Left out since its last entry: failing (reported once), or refused (reported once). */
 	#out: "none" | "failed" | "refused" = "none";
@@ -122,9 +122,9 @@ export class RegistryContribution implements Dependent {
 
 	#adapt(raw: unknown, adapter: (old: never) => unknown): unknown {
 		const adapted = this.#adapted;
-		if (adapted !== undefined && adapted.from === raw) return adapted.value;
+		if (adapted !== undefined && adapted.from === raw && adapted.adapter === adapter) return adapted.value;
 		const value = this.record.adapt(() => adapter(raw as never));
-		this.#adapted = { from: raw, value };
+		this.#adapted = { from: raw, adapter, value };
 		return value;
 	}
 

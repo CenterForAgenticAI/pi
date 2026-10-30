@@ -4,7 +4,7 @@
 // an ended dependency), whether this host's first pass can count it (no blocker here still without its first outcome, decision
 // (a)), and the remote blocker that is only loading; and the `parked_long` report a long wait on that blocker makes.
 
-import { type ChordError, isChordError } from "../data/index.ts";
+import { ChordError, type FailureCause, isChordError } from "../data/index.ts";
 import { asChordError, waitingFor } from "../data/internal.ts";
 import type { RegistryValueSource } from "../registries/internal.ts";
 import type { ChordObject } from "./object.ts";
@@ -30,6 +30,8 @@ export type Check =
 			readonly shown: RefState;
 			readonly firstPass: boolean;
 			readonly remoteLoading: string | undefined;
+			/** The first blocker in declaration order that is only loading (a reload's report names it). */
+			readonly loadingOn: string | undefined;
 	  }
 	| { readonly kind: "broken"; readonly error: ChordError };
 
@@ -40,7 +42,7 @@ export function checkDependencies(dependencies: readonly Dependency[]): Check {
 	let failed: Failed | undefined;
 	let firstPass = true;
 	let remoteLoading: string | undefined;
-	let loading = false;
+	let loadingOn: string | undefined;
 	for (const dependency of dependencies) {
 		if (dependency.kind === "registry") {
 			const { value } = dependency;
@@ -65,15 +67,15 @@ export function checkDependencies(dependencies: readonly Dependency[]): Check {
 				continue;
 			}
 			case "loading": {
-				loading = true;
+				loadingOn ??= binding.label;
 				const target = binding.target;
 				if (target?.blocksFirstPass === true) firstPass = false;
 				if (target?.heldOnLink === true) remoteLoading ??= target.label;
 			}
 		}
 	}
-	if (failed === undefined && !loading) return LIVE;
-	return { kind: "parked", shown: failed ?? LOADING, firstPass, remoteLoading };
+	if (failed === undefined && loadingOn === undefined) return LIVE;
+	return { kind: "parked", shown: failed ?? LOADING, firstPass, remoteLoading, loadingOn };
 }
 
 /**
@@ -83,6 +85,17 @@ export function checkDependencies(dependencies: readonly Dependency[]): Check {
  */
 function healsNever(error: ChordError): boolean {
 	return (isChordError(error, "invalid") && error.reason === "cycle") || isChordError(error, "forbidden");
+}
+
+/**
+ * What a reload reports for a parked attempt (slice 7b §4): its failure's cause, or for a blocker that is only
+ * loading a `waiting` cause naming it.
+ */
+export function parkedCause(check: Extract<Check, { readonly kind: "parked" }>): FailureCause {
+	const { shown } = check;
+	if (shown.kind === "failed") return shown.cause;
+	const label = check.loadingOn ?? "a dependency";
+	return waitingFor(label, new ChordError({ code: "unavailable", message: `${label} is loading` }));
 }
 
 /** A parked attempt's state for a blocker `label` that failed with `error`. */

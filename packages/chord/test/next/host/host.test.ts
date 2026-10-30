@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { BACKGROUND_CONTEXT as context, withCancel } from "../../../src/context/index.ts";
-import { hostKind, int, local, method, remote, str } from "../../../src/next/contracts/index.ts";
+import { BACKGROUND_CONTEXT as context, withAbortSignal, withCancel } from "../../../src/context/index.ts";
+import { evolve, hostKind, int, local, method, obj, remote, str } from "../../../src/next/contracts/index.ts";
 import { broken } from "../../../src/next/data/index.ts";
 import {
 	type Ctx,
@@ -37,6 +37,7 @@ import {
 	Server,
 	Session,
 	serveNotes,
+	statesOf,
 	type TestPrincipal,
 	testCodec,
 	transported,
@@ -1340,5 +1341,276 @@ describe("the host's store", () => {
 		await host.close(context);
 		expect(errors.map(({ kind }) => kind)).toEqual(["storage_failed"]);
 		await store.close(context);
+	});
+});
+
+/** A plugin's facet serving `Info` with the title `title` (a new facet value each call: a changed plugin). */
+function infoFacet(title: string) {
+	return defineFacet((h) => h.serve(Info, () => ({ title: constant(title) })));
+}
+
+describe("reload: the API (slice 7b §1)", () => {
+	it("throws before load resolved and rejects released/closed after close", async () => {
+		const host = createHost(noErrors);
+		expect(() => host.reload([], context)).toThrow("reload runs after load");
+		await host.load([], context);
+		await host.close(context);
+		expect(await rejection(host.reload([], context))).toMatchObject({ code: "released", reason: "closed" });
+	});
+
+	it("reports plugins added, changed and removed; the same facet object is unchanged and untouched", async () => {
+		const core = infoFacet("core");
+		const host = createHost(noErrors);
+		const kept = defineFacet((h) => h.serve(Counter, () => ({ count: constant(1), bump: async () => null })));
+		await host.load(
+			[
+				{ name: "@app/core", facet: kept },
+				{ name: "@app/info", facet: core },
+			],
+			context,
+		);
+		const counter = await host.get(Counter, {}, context);
+		const report = await host.reload(
+			[
+				{ name: "@app/core", facet: kept },
+				{ name: "@app/page", facet: defineFacet((h) => h.serve(Page, ({ id }) => ({ id: constant(id) }))) },
+			],
+			context,
+		);
+		expect(report.plugins).toEqual({ added: ["@app/page"], changed: [], removed: ["@app/info"] });
+		expect(report.objects).toEqual([{ object: "app.info", kind: "ended" }]);
+		// Untouched: the same reference stays live on the same object.
+		expect(counter.state.value).toEqual({ kind: "live" });
+		expect((await host.get(Page, { id: 3 }, context)).id.value).toBe(3);
+		await host.close(context);
+	});
+
+	it("runs reloads one after another", async () => {
+		const host = createHost(noErrors);
+		await host.load([{ name: "@app/info", facet: infoFacet("a") }], context);
+		const order: string[] = [];
+		const first = host.reload([{ name: "@app/info", facet: infoFacet("b") }], context).then(() => order.push("b"));
+		const second = host.reload([{ name: "@app/info", facet: infoFacet("c") }], context).then(() => order.push("c"));
+		await Promise.all([first, second]);
+		expect(order).toEqual(["b", "c"]);
+		expect((await host.get(Info, {}, context)).title.value).toBe("c");
+		await host.close(context);
+	});
+
+	it("an abort before the commit rejects aborted and changes nothing; after it, only ends the wait", async () => {
+		const host = createHost(noErrors);
+		await host.load([{ name: "@app/info", facet: infoFacet("a") }], context);
+		const { context: aborted, cancel } = withCancel(context);
+		cancel(new Error("stop"));
+		expect(await rejection(host.reload([{ name: "@app/info", facet: infoFacet("b") }], aborted))).toMatchObject({
+			code: "aborted",
+		});
+		expect((await host.get(Info, {}, context)).title.value).toBe("a");
+		await host.close(context);
+	});
+
+	it("rejects with a setup's or a factory's throw, naming the plugin, and the host stays on its old code", async () => {
+		const host = createHost(noErrors);
+		await host.load([{ name: "@app/info", facet: infoFacet("a") }], context);
+		const info = await host.get(Info, {}, context);
+		const throwing = defineFacet(() => {
+			throw new Error("setup threw");
+		});
+		expect(await rejection(host.reload([{ name: "@app/info", facet: throwing }], context))).toMatchObject({
+			message: 'plugin "@app/info": setup threw',
+		});
+		const factoryThrows = defineFacet((h) =>
+			h.serve(Info, () => {
+				throw new Error("factory threw");
+			}),
+		);
+		expect(await rejection(host.reload([{ name: "@app/info", facet: factoryThrows }], context))).toMatchObject({
+			message: 'plugin "@app/info", app.info: factory threw',
+		});
+		// A served-twice set and a broken accepts table are staging errors too.
+		const twice = [
+			{ name: "@app/info", facet: infoFacet("b") },
+			{ name: "@app/other", facet: infoFacet("c") },
+		];
+		expect(await rejection(host.reload(twice, context))).toMatchObject({ message: "app.info is served twice" });
+		expect(info.title.value).toBe("a");
+		expect(info.state.value).toEqual({ kind: "live" });
+		await host.close(context);
+	});
+});
+
+describe("reload: the commit (slice 7b §3)", () => {
+	it("serves added types, drops removed ones and their presence lists, and wakes requests per name", async () => {
+		const host = createHost(noErrors) as unknown as ChordHost;
+		await host.load([{ name: "@app/info", facet: infoFacet("a") }], context);
+		const page = host.hold(Page, { id: 1 }, context);
+		const other = host.hold(Core, {}, context);
+		await flushed();
+		expect(page.state.value).toMatchObject({ kind: "failed", cause: { kind: "waiting" } });
+		const presence = host.references(Info);
+		const otherStates = statesOf(await other.state.watch(context));
+		await host.reload(
+			[
+				{ name: "@app/info", facet: infoFacet("a") },
+				{ name: "@app/page", facet: defineFacet((h) => h.serve(Page, ({ id }) => ({ id: constant(id) }))) },
+			],
+			context,
+		);
+		await flushed();
+		expect(page.state.value).toEqual({ kind: "live" });
+		expect(page.id.value).toBe(1);
+		// Not a name the reload serves: still waiting, not checked again.
+		expect(other.state.value).toMatchObject({ kind: "failed", cause: { kind: "waiting" } });
+		expect(otherStates).toEqual([]);
+		await host.reload(
+			[{ name: "@app/page", facet: defineFacet((h) => h.serve(Page, ({ id }) => ({ id: constant(id) }))) }],
+			context,
+		);
+		expect(host.references(Info)).not.toBe(presence);
+		await host.close(context);
+	});
+
+	it("replaces a reloaded registry's provider and its plugin's contributions; a removed provider's readers wait", async () => {
+		const Names = defineRegistry<string, string>("app.names", { version: 1 });
+		const provider = (separator: string) =>
+			defineFacet((h, self) => {
+				h.serve(Names, { compose: (table) => table.map(({ value }) => value).join(separator) });
+				self.contribute(Names, "own");
+			});
+		const contributor = (name: string) => defineFacet((_h, self) => self.contribute(Names, name));
+		const host = createHost(noErrors);
+		await host.load(
+			[
+				{ name: "@app/names", facet: provider(",") },
+				{ name: "@app/x", facet: contributor("x") },
+			],
+			context,
+		);
+		const names = await host.registry(Names, context);
+		expect(names.value).toBe("own,x");
+		await host.reload(
+			[
+				{ name: "@app/names", facet: provider("+") },
+				{ name: "@app/x", facet: contributor("y") },
+			],
+			context,
+		);
+		expect(names.value).toBe("own+y");
+		await host.reload([{ name: "@app/x", facet: contributor("z") }], context);
+		expect(() => names.value).toThrow("no plugin serves it here");
+		await host.reload(
+			[
+				{ name: "@app/names", facet: provider(";") },
+				{ name: "@app/x", facet: contributor("z") },
+			],
+			context,
+		);
+		expect(names.value).toBe("own;z");
+		await host.close(context);
+	});
+});
+
+/** A worker's title per session (v1: a string). */
+const Title = remote("app.title", {
+	version: 1,
+	params: { session: str() },
+	hostAddress: ({ session }) => Session({ id: session }),
+	variants: { v: { state: { title: str() } } },
+});
+
+/** `Title` v2: an object; v1 consumers map back through `accepts`. */
+const TitleV2 = evolve(Title, (e) => e.state("v", "title", obj({ text: str() })));
+
+describe("reload: registries' older readers (slice 7b §3)", () => {
+	it("a reader of an older version follows the new provider's accepts[old].value; one it no longer serves waits", async () => {
+		const NamesV1 = defineRegistry<string, string>("app.names", { version: 1 });
+		const NamesV2 = defineRegistry<string, string[]>("app.names", { version: 2 });
+		const provider = (map: ((names: string[]) => string) | undefined) =>
+			defineFacet((h, self) => {
+				h.serve(NamesV2, {
+					compose: (table) => table.map(({ value }) => value),
+					...(map === undefined ? {} : { accepts: { 1: { value: map } } }),
+				});
+				self.contribute(NamesV2, "a");
+			});
+		const host = createHost(noErrors);
+		await host.load([{ name: "@app/names", facet: provider((names) => names.join(",")) }], context);
+		const old = await host.registry(NamesV1, context);
+		expect(old.value).toBe("a");
+		await host.reload([{ name: "@app/names", facet: provider((names) => `${names.join("+")}!`) }], context);
+		expect(old.value).toBe("a!");
+		await host.reload([{ name: "@app/names", facet: provider(undefined) }], context);
+		expect(() => old.value).toThrow("version 1 is not served here");
+		await host.close(context);
+	});
+});
+
+describe("reload across hosts, in the app's order (slice 7b §11)", () => {
+	it("server, then worker, then tab: an old tab is mapped, then waits for its version, then reloads its own code", async () => {
+		const serveV1 = (h: FacetHost<TestPrincipal>) =>
+			h.serve(Title, () => ({ variant: "v", members: { title: constant("one") } }));
+		const serveV2 = (text: string, accept: boolean) => (h: FacetHost<TestPrincipal>) =>
+			h.serve(
+				TitleV2,
+				() => ({ variant: "v", members: { title: constant({ text }) } }),
+				accept ? { accepts: { 1: { state: { v: { title: (current) => current.text } } } } } : {},
+			);
+		const workerSet = (setup: (h: FacetHost<TestPrincipal>) => void) => [
+			{
+				name: "@test/worker",
+				facet: defineFacet<TestPrincipal>((h) => {
+					serveNotes(h, PlacedNotes);
+					setup(h);
+				}),
+			},
+		];
+		const { tab, server, workers } = await relayed({ worker: serveV1 });
+		const old = tab.hold(Title, { session: "S1" }, context);
+		await transported();
+		expect(old.title.value).toBe("one");
+		const worker = workers.get("session|S1")!;
+		// The server installs first: nothing of Title changes there.
+		await server.reload([{ name: "@test/server", facet: defineFacet<TestPrincipal>(() => {}) }], context);
+		// The worker installs v2 accepting v1: the old tab is mapped.
+		await worker.reload(workerSet(serveV2("two", true)), context);
+		await transported();
+		expect(old.state.value).toEqual({ kind: "live" });
+		expect(old.title.value).toBe("two");
+		// A worker install without the adapter: the old tab waits for its version (a remote failure is its reads' error).
+		await worker.reload(workerSet(serveV2("three", false)), context);
+		await transported();
+		expect(old.state.value).toMatchObject({
+			kind: "failed",
+			cause: { kind: "waiting", error: { code: "contract_mismatch" } },
+		});
+		// The tab reloads its own code: its new hold (v2) binds; the old one is released.
+		const fresh = tab.hold(TitleV2, { session: "S1" }, context);
+		old.release();
+		await transported();
+		expect(fresh.title.value).toEqual({ text: "three" });
+		await server.close(context);
+	});
+});
+
+describe("reload: an abort while staging (fix round 1)", () => {
+	it("does not commit when the context is aborted by the synchronous setup", async () => {
+		const T = local("astra.cancel", { version: 1, params: {}, members: { n: int() } });
+		const host = createHost({ onError: () => {} });
+		const original = defineFacet((h) => h.serve(T, () => ({ n: constant(1) })));
+		await host.load([{ name: "@astra/cancel", facet: original }], context);
+		const ref = await host.get(T, {}, context);
+		const abort = new AbortController();
+		const changed = defineFacet((h) => {
+			abort.abort();
+			h.serve(T, () => ({ n: constant(2) }));
+		});
+		await host
+			.reload([{ name: "@astra/cancel", facet: changed }], withAbortSignal(abort.signal, context))
+			.catch(() => {});
+		await flushed();
+		const actual = ref.n.value;
+		ref.release();
+		await host.close(context);
+		expect(actual).toBe(1);
 	});
 });

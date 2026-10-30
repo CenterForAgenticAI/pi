@@ -1,7 +1,8 @@
 // Hosts (§3): `createHost`, loading facets and the start barrier, links to children, the parent (connected again after
 // a drop) and routes, the origins it relays holds for, getting and holding references as a principal, the heartbeat
-// of every link, revocation (§4), presence (§19) and keep-alive counts, registries and root scopes (slice 8), closing;
-// one batch per host, the backoff map and the endings new instances wait for.
+// of every link, revocation (§4), presence (§19) and keep-alive counts, registries and root scopes (slice 8), reloads
+// (slice 7b: staging, the commit, each object's fate, the report), closing; one batch per host, the backoff map and the
+// endings new instances wait for.
 
 import type { TelemetryContext } from "@earendil-works/pi-telemetry";
 import {
@@ -18,7 +19,7 @@ import { contractData, type Params } from "../contracts/internal.ts";
 import { ChordError, type FailureCause, type Principal, type PrincipalKeyFunction } from "../data/index.ts";
 import {
 	asChordError,
-	bindProvider,
+	binds,
 	canonicalJson,
 	checkParams,
 	identityKey,
@@ -47,19 +48,20 @@ import {
 import { Batch, type BatchError } from "../state/internal.ts";
 import type { ChordStore, Store } from "../store/store.ts";
 import { Activity, type ActivityCounts } from "./activity.ts";
-import { notLive } from "./attempt.ts";
+import { type Attempt, notLive } from "./attempt.ts";
 import { Backoff } from "./backoff.ts";
 import { type Caller, type Ctx, withLinkedAbortSignal } from "./ctx.ts";
 import { Destination, type Placed } from "./destination.ts";
-import { type Facet, type FacetContribution, type ServedEntry, setUp } from "./facet.ts";
+import type { Facet } from "./facet.ts";
 import { contributionOf } from "./members.ts";
 import type { CloseFailed } from "./native.ts";
-import { ChordObject, type Holder, type LocalContract, type RemoteContract, type Served } from "./object.ts";
+import { ChordObject, type Holder, type ReloadFate, type Served } from "./object.ts";
 import { type Presence, References } from "./presence.ts";
 import { Binding, type CheckedParams, type Held, type Reference, type Target } from "./reference.ts";
 import { RevocationKeys, type RevokedBy } from "./revocation.ts";
 import { type RootOptions, RootScopes } from "./root.ts";
 import { Route, type RouteOptions } from "./route.ts";
+import { type PluginFacet, recordFactory, type Staged, type StagingHost, stagePlugins } from "./staging.ts";
 import { UnboundIndex, type UnboundRequest } from "./unbound.ts";
 import { uuidv7 } from "./uuid.ts";
 
@@ -187,7 +189,7 @@ export type GetOptions = {
  * A host whatever its principal type, as Chord's own parts use it: `ChordHost<P>` is invariant in `P` (`load` takes
  * facets typed for exactly `P`).
  */
-export type AnyHost = Omit<ChordHost, "load" | "accept" | "connect" | "route" | "references" | "root">;
+export type AnyHost = Omit<ChordHost, "load" | "reload" | "accept" | "connect" | "route" | "references" | "root">;
 
 /** A host. `P` is the app's principal type, `R` its revocation type. */
 export interface Host<P extends Principal = Principal, R extends JsonValue = JsonValue> {
@@ -198,7 +200,20 @@ export interface Host<P extends Principal = Principal, R extends JsonValue = Jso
 	 * start barrier, decision (a)): live, failed by its own cause, parked with no blocker here still without its first
 	 * outcome, or ended (failures go to `onError`). A setup that throws rejects it and closes the host. Runs once.
 	 */
-	load(facets: readonly { readonly name: string; readonly facet: Facet<P> }[], context: Context): Promise<void>;
+	load(facets: readonly PluginFacet<P>[], context: Context): Promise<void>;
+	/**
+	 * Reloads this host's plugins (slice 7b): `facets` is its complete new plugin set; a plugin in it and not loaded
+	 * is added, one loaded with another facet value is changed (the same facet object is unchanged: untouched), one
+	 * loaded and not in it is removed. Staging runs every setup and every affected object's new factory against a
+	 * recording `self`; any throw rejects it and nothing changed. Then it commits in one batch (types, registries,
+	 * contributions; a publication waking the requests for the names it serves) and every object of a changed or
+	 * removed plugin takes its fate: swapped in place, restarted after its drain, retried, or ended (its type
+	 * removed). Resolves with the report once every fate started (swaps and retries checked their dependencies; it
+	 * does not wait for objects to go live). Reloads run one after another. Throws before `load` resolved; rejects
+	 * `released/closed` after `close`; `context`'s abort before the commit rejects `aborted` and changes nothing, after
+	 * it only ends the wait.
+	 */
+	reload(facets: readonly PluginFacet<P>[], context: Context): Promise<ReloadReport>;
 	/**
 	 * A reference once its object is live (and hydrated). It acts as the host's principal and goes where its type's host
 	 * address puts it: here, over a route, or over the parent link (`Destination`). It waits while the reference is
@@ -276,13 +291,66 @@ export interface Host<P extends Principal = Principal, R extends JsonValue = Jso
 	close(context: Context): Promise<void>;
 }
 
+/** What a reload did (slice 7b §1): its plugins by change, and what every affected object did. */
+export type ReloadReport = {
+	readonly plugins: {
+		readonly added: readonly string[];
+		readonly changed: readonly string[];
+		readonly removed: readonly string[];
+	};
+	/** Every live, activating, parked or failed object of a changed or removed plugin, by its label. */
+	readonly objects: readonly ReloadedObject[];
+};
+
+/**
+ * One object's fate in a reload: `swapped` (pure, in place), `restarted` (natives: drained, closed with reason
+ * `reload`, activated again), `ended` (its type is gone), `parked` (its new code waits for a dependency, `cause`), or
+ * `retried` (it was failed, parked or activating: a new attempt runs on the new code).
+ */
+export type ReloadedObject = { readonly object: string } & (
+	| { readonly kind: "swapped" }
+	| { readonly kind: "restarted" }
+	| { readonly kind: "ended" }
+	| { readonly kind: "parked"; readonly cause: FailureCause }
+	| { readonly kind: "retried" }
+);
+
 /**
  * What a hold placed here binds to (`serving`): its object, or why it waits unbound (`failed { waiting }`: not served,
  * another version, or placed elsewhere by the provider's code).
  */
 export type Serving =
 	| { readonly kind: "object"; readonly object: ChordObject }
-	| { readonly kind: "waiting"; readonly cause: FailureCause };
+	| { readonly kind: "waiting"; readonly cause: FailureCause }
+	/** The host is installing a reload and the hold does not fit its running code: `loading` until the reload ends. */
+	| { readonly kind: "installing" };
+
+/** A published plugin: its facet (an unchanged reload passes the same object), its registries and contributions. */
+type LoadedPlugin<P extends Principal> = {
+	readonly facet: Facet<P>;
+	readonly registries: readonly string[];
+	readonly contributions: readonly RegistryContribution[];
+};
+
+/** What a reload staged: the staged set, the plugins by change, and each affected object's fate. */
+type ReloadPlan<P extends Principal> = {
+	readonly staged: Staged;
+	readonly facets: ReadonlyMap<string, Facet<P>>;
+	readonly added: readonly string[];
+	readonly changed: readonly string[];
+	readonly removed: readonly string[];
+	readonly fates: readonly PlannedFate[];
+};
+
+/** An affected object's fate, as staging decided it. */
+type PlannedFate =
+	| { readonly kind: "end"; readonly object: ChordObject }
+	| { readonly kind: ReloadFate; readonly object: ChordObject; readonly served: Served };
+
+/** A fate started by a reload's commit, for its report: a swap's or retry's new attempt is checked first. */
+type StartedFate =
+	| { readonly object: string; readonly kind: "ended" }
+	| { readonly object: string; readonly kind: "swapped" | "restarted" | "retried"; readonly attempt: Attempt };
 
 /** Creates a host. */
 export function createHost<P extends Principal = Principal, R extends JsonValue = JsonValue>(
@@ -294,14 +362,14 @@ export function createHost<P extends Principal = Principal, R extends JsonValue 
 /** No registry edges pending (a facet's contributions). */
 const NO_EDGES: readonly RegistryEdge[] = [];
 
+/** A hold for a type or version the running code does not serve, while a reload installs. */
+const INSTALLING: Serving = { kind: "installing" };
+
 /** No activation chain (Q5). */
 const NO_CHAIN: readonly string[] = [];
 
 /** The params of a type with empty params, as checked: nothing, and the empty key. */
 const EMPTY_PARAMS: CheckedParams = { params: {}, key: "" };
-
-/** An npm package name, scoped or not. */
-const PLUGIN_NAME = /^(?:@[a-z0-9~-][a-z0-9._~-]*\/)?[a-z0-9~-][a-z0-9._~-]*$/;
 
 /** The host: its served types, its objects by identity, its batch, backoff and endings. */
 export class ChordHost<P extends Principal = Principal, R extends JsonValue = JsonValue> implements Host<P, R> {
@@ -321,7 +389,17 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 	/** The presence list of each type someone asked about (`references`), by type name. */
 	readonly #references = new Map<string, References>();
 	readonly #onError: (error: HostError) => void;
-	readonly #types = new Map<string, Served>();
+	/** The served types by name: the published plugin set's (a reload's commit replaces it). */
+	#types = new Map<string, Served>();
+	/** The published plugins by name: their facet (an unchanged one is the same object), registries and contributions. */
+	readonly #plugins = new Map<string, LoadedPlugin<P>>();
+	/** The reloads, one after another (slice 7b §1): the last one's end, which the next one waits for. */
+	#reloading: Promise<unknown> = Promise.resolve();
+	/**
+	 * While a reload stages (slice 7b §2, model §1): requests that do not fit the running code wait here `installing`
+	 * (`loading`) by name, re-evaluated when the reload ends, by its commit or its rejection; `undefined` otherwise.
+	 */
+	#installing: Map<UnboundRequest, string> | undefined;
 	/** By identity, in the order they went live (the others where they were created). */
 	readonly #objects = new Map<string, ChordObject>();
 	/** Teardowns still running, by identity: the next instance of an identity waits for its previous ones. */
@@ -375,17 +453,18 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 		this.store?.attach({ failed: (error) => this.#storageFailed(error), batch: this.batch });
 	}
 
-	async load(facets: readonly { readonly name: string; readonly facet: Facet<P> }[], context: Context): Promise<void> {
+	async load(facets: readonly PluginFacet<P>[], context: Context): Promise<void> {
 		this.batch.assertOutside("load");
 		this.#assertOpen();
 		if (this.#state !== "new") throw new Error("load runs once per host");
 		this.#state = "loading";
 		try {
-			const contributions = this.#setUp(facets);
-			// The publication: the facets' contributions and the first composition of every served registry, in one
-			// batch, before any object activates.
+			const staged = stagePlugins(facets, this.#stagingHost());
+			this.#types = staged.types;
+			// The publication: the types and registries served, the facets' contributions and the first composition of
+			// every served registry, in one batch, before any object activates.
 			this.batch.commit(() => {
-				for (const contribution of contributions) contribution.record.add(contribution);
+				this.#publish(staged, staged.contributions.keys(), facetsByName(facets));
 				for (const record of this.#registries.values()) record.composeServed();
 			}, context);
 		} catch (error) {
@@ -403,6 +482,163 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 			.map((served) => this.#object(served, EMPTY_PARAMS, undefined, context));
 		await Promise.all(objects.map(({ firstOutcome }) => firstOutcome));
 		if (this.#state === "loading") this.#state = "loaded";
+	}
+
+	reload(facets: readonly PluginFacet<P>[], context: Context): Promise<ReloadReport> {
+		this.batch.assertOutside("reload");
+		if (this.#state === "closed") return Promise.reject(this.#closedError());
+		if (this.#state !== "loaded") throw new Error("reload runs after load");
+		const reload = this.#reloading.then(() => this.#reload(facets, context));
+		this.#reloading = reload.catch(() => {});
+		return reload;
+	}
+
+	/** One reload, after the previous one: staging, the commit, the fates, the report. */
+	async #reload(facets: readonly PluginFacet<P>[], context: Context): Promise<ReloadReport> {
+		this.#assertOpen();
+		if (context.abortSignal?.aborted) throw reloadAborted();
+		const plan = this.#stageReload(facets, context);
+		// Aborted while it staged (a setup may abort it synchronously): rejected as a staging error, nothing changed.
+		if (context.abortSignal?.aborted) {
+			this.#installed();
+			throw reloadAborted();
+		}
+		const started = this.#commit(plan, context);
+		const objects = await this.#report(started, context);
+		const { added, changed, removed } = plan;
+		return { plugins: { added, changed, removed }, objects };
+	}
+
+	/**
+	 * Staging (slice 7b §2): the host is installing meanwhile; every setup runs into a staged table (`stagePlugins`),
+	 * every object of a changed or removed plugin whose type is still served has its new factory recorded, which
+	 * decides its fate. A throw rejects the reload with nothing changed (the requests that waited `installing` are
+	 * evaluated again against the running code).
+	 */
+	#stageReload(facets: readonly PluginFacet<P>[], context: Context): ReloadPlan<P> {
+		this.#installing = new Map();
+		try {
+			const staged = stagePlugins(facets, this.#stagingHost());
+			const byName = facetsByName(facets);
+			const added: string[] = [];
+			const changed: string[] = [];
+			const removed = [...this.#plugins.keys()].filter((name) => !byName.has(name));
+			for (const [name, facet] of byName) {
+				const loaded = this.#plugins.get(name);
+				if (loaded === undefined) added.push(name);
+				else if (loaded.facet !== facet) changed.push(name);
+			}
+			const reloaded = new Set([...changed, ...removed]);
+			const fates: PlannedFate[] = [];
+			for (const object of this.#objects.values()) {
+				if (!reloaded.has(object.served.plugin)) continue;
+				const served = staged.types.get(object.served.contract.name);
+				if (served === undefined || served.kind !== object.served.kind) {
+					fates.push({ kind: "end", object });
+					continue;
+				}
+				fates.push({ kind: object.reloadFate(recordFactory(object, served, context)), object, served });
+			}
+			return { staged, facets: byName, added, changed, removed, fates };
+		} catch (error) {
+			this.#installed();
+			throw error;
+		}
+	}
+
+	/**
+	 * The commit (slice 7b §3), one batch: the served types become the staged ones (an unchanged plugin's stay as
+	 * they were), the removed plugins' registry providers go and the reloaded ones' are replaced, their facet
+	 * contributions replaced by plugin, every changed registry composed once; a removed type's presence list goes.
+	 * Then each object takes its fate, host-lifetime objects of new types start, and the publication wakes the
+	 * requests waiting for the names the reload serves, and those that waited `installing`.
+	 */
+	#commit(plan: ReloadPlan<P>, context: Context): readonly StartedFate[] {
+		const { staged, added, changed, removed } = plan;
+		const published = new Set([...changed, ...added]);
+		const types = new Map<string, Served>();
+		// An unchanged plugin's types stay as they are: its objects are untouched.
+		for (const [name, served] of staged.types) {
+			types.set(name, published.has(served.plugin) ? served : this.#types.get(name)!);
+		}
+		this.batch.commit(() => {
+			for (const name of [...changed, ...removed]) {
+				const loaded = this.#plugins.get(name)!;
+				for (const registry of loaded.registries) {
+					if (staged.registries.get(registry)?.plugin !== name) this.registryRecord(registry).unserve();
+				}
+				for (const contribution of loaded.contributions) contribution.record.remove(contribution);
+				this.#plugins.delete(name);
+			}
+			this.#types = types;
+			this.#publish(staged, published, plan.facets);
+			for (const name of published) {
+				for (const registry of this.#plugins.get(name)!.registries) this.registryRecord(registry).composeServed();
+			}
+		}, context);
+		for (const name of this.#references.keys()) if (!types.has(name)) this.#references.delete(name);
+		const names = new Set<string>();
+		for (const [name, served] of types) if (published.has(served.plugin)) names.add(name);
+		for (const [name, { plugin }] of staged.registries) if (published.has(plugin)) names.add(name);
+		const started = plan.fates.map((fate) => this.#startFate(fate));
+		for (const type of types.values()) {
+			if (type.kind === "local" && type.hostLifetime) this.#object(type, EMPTY_PARAMS, undefined, context);
+		}
+		this.#unbound.wake(names);
+		this.#installed();
+		return started;
+	}
+
+	/**
+	 * Starts one object's fate after the commit (slice 7b §4): a removed type's object ends, its holders waiting
+	 * `not_served`; any other swaps, restarts or retries on its new served type.
+	 */
+	#startFate(fate: PlannedFate): StartedFate {
+		const { object } = fate;
+		if (fate.kind === "end") {
+			const error = new ChordError({
+				code: "unavailable",
+				message: `${object.served.contract.name} is not served here`,
+			});
+			object.remove({ kind: "waiting", error });
+			return { object: object.label, kind: "ended" };
+		}
+		const attempt = object.reload(fate.served, fate.kind);
+		return { object: object.label, kind: STARTED[fate.kind], attempt };
+	}
+
+	/**
+	 * The report, once every swap and retry had its first dependency check (a parked one reports why); restarts are
+	 * reported at once (their check follows the drain). `context`'s abort ends only this wait (`aborted`).
+	 */
+	async #report(started: readonly StartedFate[], context: Context): Promise<ReloadedObject[]> {
+		const checks = started.map(async (fate): Promise<ReloadedObject> => {
+			if (fate.kind === "ended" || fate.kind === "restarted") return { object: fate.object, kind: fate.kind };
+			const cause = await fate.attempt.checked;
+			return cause === undefined
+				? { object: fate.object, kind: fate.kind }
+				: { object: fate.object, kind: "parked", cause };
+		});
+		try {
+			return await awaitWithContext(Promise.all(checks), context);
+		} catch {
+			throw reloadAborted();
+		}
+	}
+
+	/** The reload ends (committed or rejected): requests that waited `installing` are evaluated again. */
+	#installed(): void {
+		const installing = this.#installing;
+		this.#installing = undefined;
+		// Those the commit's publication woke already are not woken again.
+		for (const [request, name] of installing ?? []) if (this.#unbound.delete(name, request)) request.wake();
+	}
+
+	/** This host as staging sees it: whom it acts as, its address and its presence lists. */
+	#stagingHost(): StagingHost {
+		// Setups get presence lists of this host's `P`; staging passes them on as they are.
+		const references = (Type: Contract) => this.references(Type);
+		return { principal: this.principal, address: this.address, references: references as StagingHost["references"] };
 	}
 
 	async get<C extends Contract>(
@@ -567,6 +803,23 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 		this.#unbound.add(name, request);
 	}
 
+	/**
+	 * `request` (a hold) waits `installing` under `name` (the type it asks for) until the running reload ends, by its
+	 * commit or its rejection (model §1, §5).
+	 */
+	installing(name: string, request: UnboundRequest): void {
+		this.#installing?.set(request, name);
+		this.#unbound.add(name, request);
+	}
+
+	/**
+	 * `binding`, whose object left it (its type removed, its version no longer bound: slice 7b §6), waits unbound with
+	 * `cause` under its type's name; a publication places it again (`params` checked as it was, under `context`).
+	 */
+	rewait(binding: Binding, Type: Contract, params: CheckedParams, cause: FailureCause, context: Context): void {
+		this.#wait(binding, Type.name, cause, () => this.#place(binding, Type, params, context));
+	}
+
 	/** `request` left the unbound index's wait for `name` (it ended, or a retry checks it again). */
 	unindex(name: string, request: UnboundRequest): void {
 		this.#unbound.delete(name, request);
@@ -663,7 +916,10 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 			unboundCause(served, Type.kind, Type.name, Type.version, Type.fingerprint) ??
 			this.#misplaced(Type, served!, params.params);
 		if (unbound !== undefined) {
-			this.#wait(binding, Type.name, unbound, () => this.#place(binding, Type, params, context));
+			const place = (): void => this.#place(binding, Type, params, context);
+			// Installing: it waits `loading` for the reload's end, which may serve it.
+			if (this.#installing !== undefined) this.#installing.set(binding, Type.name);
+			this.#wait(binding, Type.name, this.#installing === undefined ? unbound : undefined, place);
 			return undefined;
 		}
 		// Checked above: served here at the caller's version.
@@ -688,7 +944,8 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 		const { type, version, fingerprint, chain = NO_CHAIN } = request;
 		const served = this.#types.get(type);
 		const unbound = unboundCause(served, "remote", type, version, fingerprint);
-		if (unbound !== undefined) return { kind: "waiting", cause: unbound };
+		if (unbound !== undefined)
+			return this.#installing === undefined ? { kind: "waiting", cause: unbound } : INSTALLING;
 		// Checked above: a remote type served here.
 		const remote = served as Extract<Served, { readonly kind: "remote" }>;
 		const checked = checkParams(remote.contract, params, context);
@@ -934,6 +1191,8 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 		const failures: CloseFailed[] = [];
 		for (const tearDown of teardowns) failures.push(...(await tearDown()));
 		this.#types.clear();
+		// Their facets keep their factories' closures (which may keep objects' handles).
+		this.#plugins.clear();
 		for (const record of this.#registries.values()) record.close();
 		this.#registries.clear();
 		this.store?.detach();
@@ -968,63 +1227,30 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 	}
 
 	/**
-	 * Runs every facet's setup, checking the plugin names (npm names, each once), and serves what they declared; returns
-	 * their contributions, which enter the registries' tables once the setups ran.
+	 * Publishes staged plugins `names` of `staged`, inside the publication's batch: their types served (`types`), the
+	 * registries they serve served (and composed once), their facet contributions entered into the tables.
 	 */
-	#setUp(facets: readonly { readonly name: string; readonly facet: Facet<P> }[]): RegistryContribution[] {
-		const names = new Set<string>();
-		const made: RegistryContribution[] = [];
-		for (const { name, facet } of facets) {
-			if (!PLUGIN_NAME.test(name)) throw new Error(`"${name}" is not a valid plugin name`);
-			if (names.has(name)) throw new Error(`plugin "${name}" is loaded twice`);
-			names.add(name);
-			const { served, contributions } = setUp(name, facet, (Type) => this.references(Type));
-			for (const entry of served) this.#serve(name, entry);
-			for (const contribution of contributions) made.push(this.#contribution(name, contribution));
+	#publish(staged: Staged, names: Iterable<string>, facets: ReadonlyMap<string, Facet<P>>): void {
+		for (const name of names) {
+			const registries: string[] = [];
+			for (const [registry, { plugin, registry: token, provider }] of staged.registries) {
+				if (plugin !== name) continue;
+				this.registryRecord(registry).serve(token.version, provider);
+				registries.push(registry);
+			}
+			const contributions = (staged.contributions.get(name) ?? []).map(({ registry, value }) =>
+				// A facet contributes no registry's value (it reads none): no edges of its own.
+				contributionOf(
+					this.registryRecord(registry.name),
+					{ plugin: name, type: undefined },
+					registry.version,
+					value,
+					NO_EDGES,
+				),
+			);
+			for (const contribution of contributions) contribution.record.add(contribution);
+			this.#plugins.set(name, { facet: facets.get(name)!, registries, contributions });
 		}
-		return made;
-	}
-
-	/** A facet's contribution, checked: in its registry's table while the host lives (its plugin stays loaded). */
-	#contribution(plugin: string, { registry, value }: FacetContribution): RegistryContribution {
-		// A facet contributes no registry's value (it reads none): no edges of its own.
-		const record = this.registryRecord(registry.name);
-		return contributionOf(record, { plugin, type: undefined }, registry.version, value, NO_EDGES);
-	}
-
-	#serve(plugin: string, entry: ServedEntry): void {
-		if (entry.kind === "registry") {
-			this.registryRecord(entry.registry.name).serve(entry.registry.version, entry.provider);
-			return;
-		}
-		const { contract, factory, options } = entry;
-		if (this.#types.has(contract.name)) throw new Error(`${contract.name} is served twice`);
-		// A client serves only local types (§3): a remote object is owned by a principal of the host serving it.
-		if (contract.kind === "remote" && this.principal === undefined) {
-			throw new Error(`${contract.name}: a host without a principal serves only local types`);
-		}
-		// A remote object lives on the host its `hostAddress` names: only a host with an address can be that host.
-		if (contract.kind === "remote" && this.address === undefined) {
-			throw new Error(`${contract.name}: a host without an address serves only local types`);
-		}
-		const common = { plugin, provider: bindProvider(contract, {}), linger: options.linger ?? 0 };
-		// The contract's kind decides the factory's signature and the contract's shape.
-		const served: Served =
-			contract.kind === "local"
-				? {
-						...common,
-						kind: "local",
-						contract: contract as LocalContract,
-						factory: factory as Extract<Served, { kind: "local" }>["factory"],
-						hostLifetime: contractData(contract).params.fields.length === 0,
-					}
-				: {
-						...common,
-						kind: "remote",
-						contract: contract as RemoteContract,
-						factory: factory as Extract<Served, { kind: "remote" }>["factory"],
-					};
-		this.#types.set(contract.name, served);
 	}
 
 	#assertOpen(): void {
@@ -1052,7 +1278,7 @@ function unboundCause(
 		return { kind: "waiting", error: new ChordError({ code: "unavailable", message: `${name} is not served here` }) };
 	}
 	const { contract } = served;
-	if (version === contract.version && fingerprint === contract.fingerprint) return undefined;
+	if (binds(served.provider, version, fingerprint)) return undefined;
 	const message = `${name} v${version} does not match the served v${contract.version}`;
 	return { kind: "waiting", error: new ChordError({ code: "contract_mismatch", message }) };
 }
@@ -1077,4 +1303,17 @@ async function untilUsable(value: RegistryValueSource, usable: () => boolean, co
 	} finally {
 		release();
 	}
+}
+
+/** What the report calls a fate. */
+const STARTED = { swap: "swapped", restart: "restarted", retry: "retried" } as const;
+
+/** The `aborted` error of a reload whose context aborted: before its commit nothing changed; after it, only its wait. */
+function reloadAborted(): ChordError {
+	return new ChordError({ code: "aborted", message: "reload: aborted" });
+}
+
+/** The facets of a plugin set by plugin name. */
+function facetsByName<P extends Principal>(facets: readonly PluginFacet<P>[]): Map<string, Facet<P>> {
+	return new Map(facets.map(({ name, facet }) => [name, facet]));
 }

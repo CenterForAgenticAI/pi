@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { BACKGROUND_CONTEXT as context } from "../../../src/context/index.ts";
 import { bool, int, local, method, obj } from "../../../src/next/contracts/index.ts";
 import { defineState } from "../../../src/next/documents/index.ts";
-import type { HostError } from "../../../src/next/host/index.ts";
+import { createHost, defineFacet, type HostError } from "../../../src/next/host/index.ts";
 import { ChordObject } from "../../../src/next/host/object.ts";
 import {
 	defineRegistry,
@@ -670,5 +670,40 @@ describe("the table's memory", () => {
 			return [names, new WeakRef(host)];
 		})();
 		await expectCollected(...refs);
+	});
+});
+
+describe("a reload's new contribution adapter (fix round 1)", () => {
+	it("remaps an unchanged contributor with the new provider's adapter", async () => {
+		const R = defineRegistry<number, number>("astra.contrib", { version: 2 });
+		const Old = defineRegistry<number, number>("astra.contrib", { version: 1 });
+		const contribution = defineFacet((_, self) => self.contribute(Old, 7));
+		const provider = (factor: number) =>
+			defineFacet((h) =>
+				h.serve(R, {
+					compose: (entries) => entries.reduce((n, e) => n + e.value, 0),
+					accepts: { 1: { contribution: (n) => n * factor, value: (n) => n } },
+				}),
+			);
+		const host = createHost({ onError: () => {} });
+		await host.load(
+			[
+				{ name: "@astra/provider", facet: provider(2) },
+				{ name: "@astra/contribution", facet: contribution },
+			],
+			context,
+		);
+		const value = await host.registry(R, context);
+		expect(value.value).toBe(14);
+		await host.reload(
+			[
+				{ name: "@astra/provider", facet: provider(3) },
+				{ name: "@astra/contribution", facet: contribution },
+			],
+			context,
+		);
+		const actual = value.value;
+		await host.close(context);
+		expect(actual).toBe(21);
 	});
 });

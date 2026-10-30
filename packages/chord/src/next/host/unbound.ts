@@ -1,7 +1,8 @@
 // The unbound index (dependency model §1, §4): the requests a host decided cannot bind yet, by the name they wait for.
 // Before the host's first publication every request made here, and every hold arriving on its links, waits here
 // (`unpublished`); after it, those its check left unbound (`not_served`, `version`): a reference made here, a hold that
-// arrived over a link and was refused for a name. A publication wakes the requests of the names it serves; a request
+// arrived over a link and was refused for a name. A publication wakes the requests of the names it serves (`load`'s
+// every one, a reload's those of its names); a request
 // leaves when it ends (released, settled, given up, its link or origin closed, revoked) or binds.
 
 import type { ChordError, Principal } from "../data/index.ts";
@@ -30,11 +31,12 @@ export class UnboundIndex {
 		requests.add(request);
 	}
 
-	/** `request` ended or binds: it leaves the index. */
-	delete(name: string, request: UnboundRequest): void {
+	/** `request` ended or binds: it leaves the index; whether it was there. */
+	delete(name: string, request: UnboundRequest): boolean {
 		const requests = this.#byName.get(name);
-		if (requests === undefined || !requests.delete(request)) return;
+		if (requests === undefined || !requests.delete(request)) return false;
 		if (requests.size === 0) this.#byName.delete(name);
+		return true;
 	}
 
 	/** The host's publication: every request indexed (by any name) runs its check again, out of the index first. */
@@ -42,6 +44,21 @@ export class UnboundIndex {
 		const all = [...this.#byName.values()].flatMap((requests) => [...requests]);
 		this.#byName.clear();
 		for (const request of all) request.wake();
+	}
+
+	/**
+	 * A reload's publication: the requests indexed under `names` (the types and registries it serves) run their check
+	 * again, out of the index first; the others stay (carry-over "Publications wake per name").
+	 */
+	wake(names: Iterable<string>): void {
+		const woken: UnboundRequest[] = [];
+		for (const name of names) {
+			const requests = this.#byName.get(name);
+			if (requests === undefined) continue;
+			this.#byName.delete(name);
+			woken.push(...requests);
+		}
+		for (const request of woken) request.wake();
 	}
 
 	/** Every indexed request acting for a principal `revoked` names ends with `error`. */

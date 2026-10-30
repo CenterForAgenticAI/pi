@@ -1530,7 +1530,7 @@ validation and copies the v2 kernel added around Delta.
 - **Slice 6a build reviews (2026-10-27, under the owner's delegation to the reviewers' majority):** two rounds of four
   build reviews (`/tmp/s6a-build-review{,2}-{astra,fable,opus,sol}.md`), merged into two fix lists
   (`/tmp/s6a-fix{1,2}-brief.md`, 28 and 16 items) by majority, a point raised by one reviewer taking that reviewer's
-  recommendation. Rules they settle beyond fixes of the spec: (1) **members across attempts:** a local object's state
+  recommendation. Rules they settle beyond fixes of the spec: (1) **members across attempts** (**superseded in part** by "References are the only indirection": the reference, not a member source on the object, follows the object across instances): a local object's state
   member is followed by its references and by other objects' derives through one member source per object and member
   name; when a new attempt goes live every member re-binds by name (one diff frame from the last value, consumers'
   derives recompute, a member the new variant lacks fails `invalid/member`), as a remote reference re-holds and gets a
@@ -1780,6 +1780,64 @@ validation and copies the v2 kernel added around Delta.
   takes a context and the app passes its deadline. (5) The loader lives in Chord (`chord/next/loader`, slice 7c). (6)
   Chord ships the app kit as optional subpaths: `loader` and `dev` (7c), `http` and `workers` (slice 10), `web` and
   `tui` (slice 11); telemetry (slice 9) last.
+- **Slice 7b's build decisions (owner, 2026-10-29, answering the builder; `slice-7b.md` §13):** a loaded plugin passed
+  as the same facet object (`===`) is unchanged and untouched, any other facet value for a loaded name is changed;
+  activating (not parked) and backoff-waiting objects of a reloaded plugin are retried; the report's `parked` covers
+  swaps and retries (their first dependency check), restarts are reported at once; a swapped-out attempt is sealed
+  once its calls settled (bounded by `closeTimeout`) and the swap ended, its job invocations finishing on their old
+  code; a stuck old routine call is reported `drain_timeout` and fenced by the old routine calls' shared token; a swap
+  to another variant sends holds a fresh `bound`; a native restart ends in-memory runs `aborted { reload }` while
+  persisted ones follow 6b R3 (stopped, resumed per `resume`, no restart counted); staging is synchronous
+  (`installing` tested from a staged factory); a removed object's member sources and pinned keys are handed to the next
+  object of its identity (fix round 3: one hand-over per identity for removal, version refusal and an object ending
+  while requests wait, `slice-7b.md` §13 item 11); keyed members' versions are built in 7b (L1's keyed edits and an accepts `keyed` section,
+  decision "Keyed state members, local contracts only"). The builder's own choice, accepted by the owner (2026-10-29):
+  adapted state members are derives per object and version, not per binding. (**Superseded in part** by "References
+  are the only indirection": the hand-over of member sources and the per-version sources that outlive an object go.)
+- **References are the only indirection (owner, 2026-10-29: "go"; after seven fix rounds of 7b found one edge case after
+  another in sources handed between objects):** supersedes in part 6a's "members across attempts" (one member source
+  per object and member name) and slice 7b decisions 8 and 11 (member sources and pinned keys frozen and handed to the
+  next object of the identity; per-version outward sources owned by (identity, version); `host/handover.ts`). The
+  problem: a consumer's watch or derive over `ref.count` was attached to the referenced object's own document or derive
+  (the reference was bypassed), so every change of what the reference points at needed a stable node somewhere else
+  (`MemberSource` on the object, then sources that outlive the object and move to the next one). The rule: (1) a
+  consumer's watches and derives over a referenced object's member attach through the reference's member, which passes
+  the subscription straight through to the object's own document or derive (no extra hop on commits). (2) When what the
+  reference points at changes (a new object instance after a factory re-run: reload, retry, restart; a new object
+  after the type was removed and served again; another variant), the reference moves its subscriptions to the new one
+  and sends one frame, a diff from the last value. (3) While it points at nothing, its members keep their last values
+  (a pointer, no copy): while loading (a restart, a retry, a swap whose new instance is not live yet) its watches get
+  no call; while failed (a live failure, its version refused, its type removed, a failed dependency) one `failed` call
+  with the cause's error, and they stay open (replaces 6a's "no frames while failed"); a reference that never had a
+  value reads `not_ready` while loading and its failure's error while failed, and its watches wait for its first values
+  (a member the new variant lacks fails `invalid/member`, as before). Keyed watches and pins re-pin on each new instance the same way (the
+  cross-attempt key sources of 6a go; a key keeps its last value until the new instance loaded it; a dependent's
+  factory pin is still loaded before the dependent goes live). Once hydrated, a reference has last values for every state member of its bound variant, read or not: when it
+  detaches it takes them at its version from the outgoing instance (through that instance's mapping for an older
+  version), keeping no node of it. After a `failed` call, the next good value arrives as `[["r", value]]` even when
+  unchanged; a watch opened while failed starts at the last value and gets the failure once. No source, mapping,
+  document handle or pin of an instance outlives it through a reference: a detached reference keeps only plain last
+  values and its failure; releasing it drops them and its bindings; stopping a keyed watch drops its pin. (4) The same rule over a link: a replica keeps its last values
+  readable while its hold is failed. (5) An older consumer (`accepts`) attaches to the object instance's shared mapping
+  for its version: per member one derive `(current) => old`, made on first use, dropped when no reference of that
+  version is left, gone with the instance (one map and one diff per commit per version, whatever the number of old
+  references); a version the instance does not accept gives no member (unbound, last values kept). A reference knows
+  its version from the contract token it was made with. Nothing outlives its object instance; nothing is handed over.
+  Kept: requests never end on a code change, healing on rebind, `accepts` for arguments and results. A simplification
+  audit of slices 6a to 7b follows 7b's commit (owner: "how much other such bullshit was added in the last slices").
+  Refined after the gap checks (Astra, Sol, Opus) and the build (owner, 2026-10-29: "i accept the recommendations"):
+  a detaching reference follows the old instance until it stops changing (its seal after admitted commits, a restart
+  after its drain), then takes its last values for every member of its bound variant, read or not, never from an
+  instance it never followed; after a `failed` call the next good value is `[["r", value]]`; a watch on a reference that
+  never hydrated resolves at its first binding (rejects on release, revocation, close, abort); release drops last
+  values and bindings; registry values and job state are not affected. **Derives over a failed reference member compute
+  on its last value** (G2 (A), as 6a): a contribution built on it stays in its table; only the reference member's own
+  watches get the `failed` call, and `ref.state` shows the failure. **Activation churn +9.6% accepted** (CPU 22, 104.7-107.9
+  → 114.7-118.3 µs, allocation equal): an object whose derive reads another object's member makes one pass-through
+  node per reference member per instance; calls, commits, links and memory are within the bar. Two references to one
+  key hold two pins (counted on the key's one source; the document is loaded and kept once). **Binary append commit-to-frame
+  median +10% accepted** (owner, 2026-10-29; CPU 10, 0.031 → 0.034-0.035 ms): equal with the young generation pinned, fewer
+  scavenges over the whole benchmark (V8's young-generation sizing, slice 7b fix round 3).
 - **A plugin's npm dependencies are bundled; external only by opt-in (owner, 2026-10-29: "explicit opt in + (a)"):**
   a plugin's `dependencies` are installed into its own `node_modules` (`npm install --ignore-scripts`) and bundled into
   each facet that imports them (host packages, its `peerDependencies`, stay external and are passed in). On Node a

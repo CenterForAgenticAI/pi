@@ -2,29 +2,38 @@ import { describe, expect, it, vi } from "vitest";
 import { type Context, BACKGROUND_CONTEXT as context } from "../../../src/context/index.ts";
 import type * as Delta from "../../../src/delta/index.ts";
 import { decoder } from "../../../src/delta/index.ts";
-import { bool, hostKind, int, local, method, obj, remote } from "../../../src/next/contracts/index.ts";
-import { broken } from "../../../src/next/data/index.ts";
+import { bool, evolve, hostKind, int, local, method, obj, remote, str } from "../../../src/next/contracts/index.ts";
+import { broken, ChordError } from "../../../src/next/data/index.ts";
 import { defineState } from "../../../src/next/documents/index.ts";
-import { createHost, defineFacet, type Host, type Self } from "../../../src/next/host/index.ts";
+import { createHost, defineFacet, type FacetHost, type Host, type Self } from "../../../src/next/host/index.ts";
 import type { ChordHost } from "../../../src/next/host/internal.ts";
+import { ChordObject } from "../../../src/next/host/object.ts";
 import { type Link, memoryLinkPair } from "../../../src/next/link/index.ts";
 import { binaryCodec, jsonPart } from "../../../src/next/link/internal.ts";
 import { Hold } from "../../../src/next/remote/hold.ts";
-import { constant } from "../../../src/next/state/index.ts";
+import { constant, type Writable } from "../../../src/next/state/index.ts";
 import {
 	changesOf,
+	delivered,
 	expectCollected,
+	failLive,
 	fakeTimers,
 	forEachCodec,
 	instancesOf,
 	linked,
+	PlacedNotes,
 	RawPeer,
 	rawLinked,
+	rejection,
+	relayed,
 	SERVER_ADDRESS,
 	Server,
+	serveNotes,
+	statesOf,
 	type TestPrincipal,
 	testCodec,
 	transported,
+	valuesOf,
 	wireNames,
 } from "../support.ts";
 
@@ -879,4 +888,337 @@ describe("retry operations across links (fix rounds 1 and 2, Sol 3)", () => {
 			}
 		},
 	);
+});
+
+/** A remote object on the server: a label, a counter and `bump`. */
+const Shown = remote("app.shown", {
+	version: 1,
+	params: {},
+	hostAddress: () => Server(),
+	variants: { v: { state: { label: str(), n: int() }, methods: { bump: method(undefined, int()) } } },
+});
+
+/** `Shown` v2: its label became an object; v1 consumers map back through `accepts`. */
+const ShownV2 = evolve(Shown, (e) => e.state("v", "label", obj({ text: str() })));
+
+/** Serves `Shown` labelled `label` (with a native when `native`); `bump` adds 1 to its in-memory counter. */
+function serveShown(h: FacetHost<TestPrincipal>, label: string, native = false): void {
+	h.serve(Shown, (_, _principal, self) => {
+		const doc = self.state(N);
+		if (native)
+			self.open(
+				async () => label,
+				() => {},
+			);
+		return {
+			variant: "v",
+			members: {
+				label: constant(label),
+				n: self.derive([doc], ([d]) => d.n),
+				bump: async (ctx) => {
+					await doc.change((draft) => {
+						draft.n += 1;
+					}, ctx);
+					return doc.value.n;
+				},
+			},
+		};
+	});
+}
+
+/** Serves `ShownV2` labelled `text`; with `accepts`, v1 consumers see `label` as its text. */
+function serveShownV2(h: FacetHost<TestPrincipal>, text: string, accept: boolean): void {
+	h.serve(
+		ShownV2,
+		(_, _principal, self) => {
+			const doc = self.state(N);
+			return {
+				variant: "v",
+				members: {
+					label: constant({ text }),
+					n: self.derive([doc], ([d]) => d.n),
+					bump: async (ctx) => {
+						await doc.change((draft) => {
+							draft.n += 1;
+						}, ctx);
+						return doc.value.n;
+					},
+				},
+			};
+		},
+		accept ? { accepts: { 1: { state: { v: { label: (current) => current.text } } } } } : {},
+	);
+}
+
+/** Reloads the server's plugin `@test/app` (as `linked` names it) with `setup`. */
+function reloadServer(server: Host<TestPrincipal>, setup: (host: FacetHost<TestPrincipal>) => void) {
+	return server.reload([{ name: "@test/app", facet: defineFacet<TestPrincipal>(setup) }], context);
+}
+
+describe("holds across a reload (slice 7b §6)", () => {
+	it("a swapped object keeps its holds: one [[r, value]] per changed member, never loading", async () => {
+		const { server, client } = await linked((h) => serveShown(h, "v1"));
+		const shown = await client.get(Shown, {}, context);
+		await shown.bump(context);
+		const states = statesOf(await shown.state.watch(context));
+		const label = changesOf(await shown.label.watch(context));
+		const n = changesOf(await shown.n.watch(context));
+		await reloadServer(server, (h) => serveShown(h, "v2"));
+		await transported();
+		expect(label).toEqual([{ kind: "value", value: "v2", ops: [["r", "v2"]], retired: false }]);
+		expect(n).toEqual([]);
+		expect(states).toEqual([]);
+		expect(await shown.bump(context)).toBe(2);
+		await server.close(context);
+	});
+
+	it("a restarted object's holds see loading, then a fresh bound", async () => {
+		const { server, client } = await linked((h) => serveShown(h, "v1", true));
+		const shown = await client.get(Shown, {}, context);
+		const states = statesOf(await shown.state.watch(context));
+		const label = changesOf(await shown.label.watch(context));
+		await reloadServer(server, (h) => serveShown(h, "v2", true));
+		await transported();
+		expect(states).toEqual(["loading", "live"]);
+		expect(valuesOf(label)).toEqual(["v2"]);
+		await server.close(context);
+	});
+
+	it("a version the new code no longer accepts unbinds its holds (version); a later reload accepting it binds them", async () => {
+		const { server, client } = await linked((h) => serveShown(h, "v1"));
+		const shown = await client.get(Shown, {}, context);
+		await reloadServer(server, (h) => serveShownV2(h, "v2", false));
+		await transported();
+		expect(shown.state.value).toMatchObject({
+			kind: "failed",
+			cause: { kind: "waiting", error: { code: "contract_mismatch" } },
+		});
+		expect(await rejection(shown.bump(context))).toMatchObject({ code: "contract_mismatch" });
+		await reloadServer(server, (h) => serveShownV2(h, "v3", true));
+		await transported();
+		expect(shown.state.value).toEqual({ kind: "live" });
+		expect(shown.label.value).toBe("v3");
+		await server.close(context);
+	});
+
+	it("a removed type unbinds its holds (not_served); served again, they bind and a derive over them heals", async () => {
+		const Panel = local("app.panel", { version: 1, params: {}, members: { text: str() } });
+		const { server, client } = await linked((h) => serveShown(h, "v1"));
+		await client.reload(
+			[
+				{
+					name: "@test/panel",
+					facet: defineFacet<TestPrincipal>((h) =>
+						h.serve(Panel, (_, self) => {
+							const shown = self.get(Shown, {});
+							return { text: self.derive([shown.label], ([label]) => `panel ${label}`) };
+						}),
+					),
+				},
+			],
+			context,
+		);
+		const panel = await client.get(Panel, {}, context);
+		const shown = client.hold(Shown, {}, context);
+		await server.reload([], context);
+		await transported();
+		expect(shown.state.value).toMatchObject({
+			kind: "failed",
+			cause: { kind: "waiting", error: { code: "unavailable" } },
+		});
+		// The dependent stays live (R18) with its last value.
+		expect(panel.state.value).toEqual({ kind: "live" });
+		expect(panel.text.value).toBe("panel v1");
+		await server.reload(
+			[{ name: "@test/app", facet: defineFacet<TestPrincipal>((h) => serveShown(h, "v2")) }],
+			context,
+		);
+		await transported();
+		expect(shown.state.value).toEqual({ kind: "live" });
+		expect(panel.text.value).toBe("panel v2");
+		await server.close(context);
+	});
+
+	it("a hold unbound while the window is full drops its pending ops; acks of messages sent stay counted", async () => {
+		const server = createHost<TestPrincipal>({ address: Server(), principal: { kind: "server" }, onError: () => {} });
+		await server.load(
+			[{ name: "@test/app", facet: defineFacet<TestPrincipal>((h) => serveShown(h, "v1")) }],
+			context,
+		);
+		const [a, b] = memoryLinkPair();
+		server.accept(a, { principal: { kind: "owner" }, codec: testCodec() }, context);
+		const peer = new RawPeer(b, { ack: false });
+		const SHOWN = wireNames(Shown, "v");
+		await peer.next("hello");
+		hold(peer, 0, Shown);
+		await peer.next("bound");
+		for (let call = 0; call < 3; call++) {
+			peer.send({ kind: "call", call, hold: 0, method: SHOWN.methods.bump! });
+			await peer.next("result");
+		}
+		// One state in flight with the bound: the third commit's ops wait in their pending queue.
+		await peer.next("state");
+		await server.reload([], context);
+		await transported();
+		expect((await peer.next("failed")).cause).toMatchObject({ kind: "waiting" });
+		peer.ack();
+		peer.ack();
+		await transported();
+		expect(peer.kinds()).toEqual([]);
+		await server.close(context);
+	});
+
+	it("through a relay: a worker's reload reaches the tab as it reaches a direct consumer", async () => {
+		const { tab, workers, server } = await relayed();
+		const notes = await tab.get(PlacedNotes, { session: "S1" }, context);
+		const worker = workers.get("session|S1")!;
+		const states = statesOf(await notes.state.watch(context));
+		await worker.reload([], context);
+		await transported();
+		expect(notes.state.value).toMatchObject({ kind: "failed", cause: { kind: "waiting" } });
+		await worker.reload(
+			[{ name: "@test/worker", facet: defineFacet<TestPrincipal>((h) => void serveNotes(h, PlacedNotes)) }],
+			context,
+		);
+		await transported();
+		expect(notes.state.value).toEqual({ kind: "live" });
+		expect(states.at(-1)).toBe("live");
+		await server.close(context);
+	});
+});
+
+describe("holds across more than one swap (fix round 1)", () => {
+	it("keeps a real subscriber when a changed constant later becomes dynamic", async () => {
+		type P = { kind: "server" } | { kind: "tab" };
+		const Server = hostKind("sol-server");
+		const Type = remote("sol.wire", {
+			version: 1,
+			params: {},
+			hostAddress: () => Server(),
+			variants: { main: { state: { x: int() }, methods: { set: method(int()) } } },
+		});
+		const Doc = defineState("wire", { schema: obj({ n: int() }), version: 1, initial: () => ({ n: 0 }) });
+		const facet = (choice: { kind: "constant"; n: number } | { kind: "dynamic" }) =>
+			defineFacet<P>((h) =>
+				h.serve(Type, (_, _principal, self) => {
+					const doc = self.state(Doc);
+					return {
+						variant: "main",
+						members: {
+							x: choice.kind === "constant" ? constant(choice.n) : self.derive([doc], ([value]) => value.n),
+							set: async (n: number, ctx: Context) => {
+								await doc.change((draft) => {
+									draft.n = n;
+								}, ctx);
+								return null;
+							},
+						},
+					};
+				}),
+			);
+		const server = createHost<P>({ address: Server(), principal: { kind: "server" }, onError: () => {} });
+		const tab = createHost<P>({ onError: () => {} });
+		try {
+			await server.load([{ name: "@sol/wire", facet: facet({ kind: "constant", n: 1 }) }], context);
+			await tab.load([], context);
+			const [up, down] = memoryLinkPair();
+			server.accept(up, { principal: { kind: "tab" } }, context);
+			tab.connect(down, { principal: { kind: "server" } }, context);
+			const held = await tab.get(Type, {}, context);
+			await server.reload([{ name: "@sol/wire", facet: facet({ kind: "constant", n: 2 }) }], context);
+			await delivered();
+			expect(held.x.value).toBe(2);
+			await server.reload([{ name: "@sol/wire", facet: facet({ kind: "dynamic" }) }], context);
+			await delivered();
+			expect(held.x.value).toBe(0);
+			await held.set(7, context);
+			await delivered();
+			expect(held.x.value).toBe(7);
+		} finally {
+			await tab.close(context);
+			await server.close(context);
+		}
+	});
+});
+
+describe("a hold after its object's live failure (final review)", () => {
+	const attempted = instancesOf(ChordObject, "attempt");
+
+	it("stops a member following another object's source at once (Sol, G1 own)", async () => {
+		const Point = obj({ n: int() });
+		const A = local("app.foreign", { version: 1, params: {}, members: { x: Point } });
+		const B = remote("app.reexposing", {
+			version: 1,
+			params: {},
+			hostAddress: () => Server(),
+			variants: { main: { state: { x: Point } } },
+		});
+		let foreign: Writable<{ n: number }> | undefined;
+		let self: Self<TestPrincipal> | undefined;
+		const { server, client } = await linked((h) => {
+			h.serve(A, (_, s) => {
+				foreign = s.writable({ n: 0 });
+				return { x: s.derive([foreign], ([value]) => value) };
+			});
+			h.serve(B, (_, _principal, s) => {
+				self = s;
+				return { variant: "main", members: { x: s.get(A, {}).x } };
+			});
+		});
+		const ref = await client.get(B, {}, context);
+		const calls = changesOf(await ref.x.watch(context));
+		failLive(attempted, self!, new ChordError({ code: "unavailable", message: "boom" }));
+		// A's change lands after B failed: B's re-exposed member no longer follows it.
+		foreign!.set({ n: 1 });
+		await delivered();
+		expect([ref.x.value, valuesOf(calls)]).toEqual([{ n: 0 }, [{ failed: "boom" }]]);
+		await client.close(context);
+		await server.close(context);
+	});
+});
+
+describe("a hold across a swap whose mapping fails (final review)", () => {
+	it("sends the member's failure and heals with the new source (Sol)", async () => {
+		const W1 = remote("app.swap-failed", {
+			version: 1,
+			params: {},
+			hostAddress: () => Server(),
+			variants: { main: { state: { x: int() } } },
+		});
+		const W2 = evolve(W1, (e) => e.state("main", "x", obj({ n: int() })));
+		let throws = true;
+		let point: Writable<{ n: number }> | undefined;
+		const serve = (h: FacetHost<TestPrincipal>, map: (value: { n: number }) => number) =>
+			h.serve(
+				W2,
+				(_, _principal, s) => {
+					point = s.writable({ n: 1 });
+					return { variant: "main", members: { x: s.derive([point], ([value]) => value) } };
+				},
+				{ accepts: { 1: { state: { main: { x: map } } } } },
+			);
+		const { server, client } = await linked((h) => serve(h, (value) => value.n));
+		const ref = await client.get(W1, {}, context);
+		const calls = changesOf(await ref.x.watch(context));
+		// The new instance's mapping throws for its first value.
+		const failing = (value: { n: number }) => {
+			if (throws) throw new Error("member boom");
+			return value.n;
+		};
+		await server.reload(
+			[{ name: "@test/app", facet: defineFacet<TestPrincipal>((h) => serve(h, failing)) }],
+			context,
+		);
+		await delivered();
+		// Live, the member failed: its watch got the failure, a read throws it (as a failed member does on the host).
+		expect([ref.state.value.kind, valuesOf(calls)]).toEqual(["live", [{ failed: "member boom" }]]);
+		expect(() => ref.x.value).toThrow("member boom");
+		// It follows the new source: the next value heals it.
+		throws = false;
+		point!.set({ n: 3 });
+		await delivered();
+		expect([ref.x.value, valuesOf(calls)]).toEqual([3, [{ failed: "member boom" }, 3]]);
+		await client.close(context);
+		await server.close(context);
+	});
 });

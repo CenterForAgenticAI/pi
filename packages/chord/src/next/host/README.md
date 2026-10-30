@@ -408,14 +408,15 @@ server.accept(webSocketLink(ws), { principal, limits: { part: 16 * MiB, decoded:
   queues behind them). A parked call is checked against its deadline when it is about to be sent, and against the
   variant it is sent on; it also leaves the queue when its caller cancels (rejected with the reason), the reference
   fails (the cause's error) or is released (`released`). A `host.hold` released before the publication makes nothing.
-- A local reference follows its object's state members through member sources (`member-source.ts`, one per object and
-  member): when a new attempt goes live every member re-binds by name to it (watches get one frame from the last
-  value, other objects' derives over the member recompute, a failed one included), as a remote reference's re-hold
-  does. The keys a reference holds on a keyed member (`at(key)`, `watch(key)`) follow the object the same way
-  (`keyed-members.ts`, one source per member and key; the new attempt's member loads them before it goes live). A key
-  whose first load is still in flight when its object fails or ends is given up: the parked attempt waiting on it shows
-  `failed { waiting }` and loads it again at the next change of that reference (its object's new attempt going live)
-  or a `ref.retry()`; the late pin is released once.
+- References are the only indirection (decision of 2026-10-29): a consumer's watches and derives over `ref.member`
+  attach through the reference's member (`reference-source.ts`), which passes them straight to the object instance's
+  own document or derive. When the reference's target changes (a new instance after a reload, retry or restart; a new
+  object after removal and re-serving; another variant) it moves them there and sends one frame (a diff from the last
+  value, whole after a failure). While it points at nothing it keeps its last values: no call while loading, one
+  `failed` call while failed; a member the new variant lacks fails `invalid/member`. The keys a reference holds on a
+  keyed member (`at(key)`, `watch(key)`) are its own (`reference-keys.ts`): pinned again on each new live instance,
+  their last value kept until that pin loads; a dependent's factory pin loads before the dependent goes live. Older
+  consumers read through the instance's shared mapping for their version (`adapted.ts`).
 - `ref.retry()`: a failed object (broken too) gets an attempt now, its backoff window skipped; every reference to it
   goes `loading`. One parked `failed { waiting }` passes it on (above). Ignored while an attempt runs otherwise, once
   live and once released; over a link it is a `retry` message carrying its operation.

@@ -2,24 +2,22 @@
 // unbound index until then), why it is unbound (refused: kept in the index while it waits for a name, dependency
 // model §1), the object it keeps, the notices of its object's failures and new attempts, the snapshot and subscription
 // taken in one synchronous step when a slot of the window is free, and the ops of its members per batch (sent at
-// once, or pending while the window is full), each member with its own Delta encoder.
+// once, or pending while the window is full), each member with its own Delta encoder. Across a reload (slice 7b §6) a
+// bound hold is kept: a swap in place re-subscribes it (one `[["r", value]]` per changed member), an object leaving
+// `live` unbinds it (`loading` or `failed`, then a fresh `bound`), a version no longer bound or a removed type leaves it
+// waiting unbound. A hold of an older version follows its object's adapted members (Q10).
 
 import type { Context } from "../../context/index.ts";
 import { type Encoder, encoder, type Op, PendingOps } from "../../delta/index.ts";
 import type { JsonValue } from "../../json.ts";
-import {
-	currentVariants,
-	type VariantData,
-	type VariantNames,
-	variantNames,
-	variantOrder,
-} from "../contracts/internal.ts";
-import { type ChordError, type FailureCause, isChordError, type Principal } from "../data/index.ts";
+import { type VariantData, type VariantNames, variantNames, variantOrder, variantsAt } from "../contracts/internal.ts";
+import { ChordError, type FailureCause, isChordError, type Principal } from "../data/index.ts";
 import { asChordError } from "../data/internal.ts";
 import {
 	type Caller,
 	type ChordObject,
 	type Holder,
+	type Removal,
 	retryOperation,
 	type Serving,
 	type UnboundRequest,
@@ -36,7 +34,7 @@ import {
 	type StateEntry,
 	wireError,
 } from "../link/internal.ts";
-import { Source, type Subscriber } from "../state/internal.ts";
+import { type DeriveSource, Source, type Subscriber } from "../state/internal.ts";
 import type { HostLink } from "./host-link.ts";
 import type { ProviderSide } from "./provider.ts";
 import { RelayedHold } from "./relay.ts";
@@ -57,7 +55,8 @@ export type HoldRequest = Omit<HoldMessage, "kind" | "origin" | "hold" | "princi
  */
 type Followed = {
 	readonly index: number;
-	readonly source: Source;
+	/** Its source (subscribed when it changes, a constant's never): a reload's swap may bring a new one. */
+	source: DeriveSource;
 	readonly subscriber: Subscriber;
 	readonly encoder: Encoder;
 	readonly pending: PendingOps;
@@ -75,11 +74,19 @@ type HoldState =
 	| { readonly kind: "binding" }
 	| {
 			readonly kind: "bound";
+			/** The bound variant's name, and its data at the hold's version. */
+			readonly variantName: string;
 			readonly variant: VariantData;
 			/** The bound version's names of the variant, which the wire's indexes point into. */
 			readonly names: VariantNames;
 			/** The members it follows, in the order they were subscribed. */
 			readonly followed: Followed[];
+			/** The instance it was bound to: a swap brings another, whose members it re-subscribes to. */
+			readonly instance: unknown;
+			/** What it was bound to per member: the instance's members, or its mapping at the hold's older version. */
+			readonly sources: Map<string, DeriveSource>;
+			/** Bound through its instance's mapping for an older version than the provider's (`AdaptedMembers`). */
+			readonly adapted: boolean;
 	  }
 	/**
 	 * Refused where it arrived, with `cause`: `waiting` (not served here, another version, placed elsewhere by the
@@ -116,6 +123,8 @@ export class Hold implements Holder, UnboundRequest {
 	readonly limits: Limits;
 	readonly #provider: ProviderSide;
 	#state: HoldState = PENDING;
+	/** What it asks for (its params owned), once it started: it is placed again after a reload left it unbound. */
+	#request: HoldRequest | undefined;
 	/** The held object, from its binding until the hold is released. */
 	#object: ChordObject | undefined;
 	/** The members the current batch changed, with their ops, in order. */
@@ -144,6 +153,11 @@ export class Hold implements Holder, UnboundRequest {
 	/** Whom it acts for (the unbound index's revocation). */
 	get principal(): Principal | undefined {
 		return this.caller.principal;
+	}
+
+	/** Its consumer's contract version and fingerprint (its request's): the provider binds them or it waits. */
+	get contract(): HoldRequest {
+		return this.#request!;
 	}
 
 	/** Whether the hold holds no object: before the publication, or refused (revocation ends it, §4). */
@@ -194,6 +208,12 @@ export class Hold implements Holder, UnboundRequest {
 			this.#refuse(request, served.cause);
 			return;
 		}
+		if (served.kind === "installing") {
+			this.#state = { kind: "unplaced", request: owned(request) };
+			link.host.installing(request.type, this);
+			return;
+		}
+		this.#request = owned(request);
 		const { object } = served;
 		this.#object = object;
 		object.hold(this);
@@ -216,27 +236,132 @@ export class Hold implements Holder, UnboundRequest {
 
 	/**
 	 * The object's state changed, or the hold took it: a pending hold binds once it is live (when a slot is free),
-	 * sends each failure, and announces the attempt after a failure with `loading`. A live object stays live until it
-	 * ends, so a hold waiting for its slot or bound has nothing to do (slice 7's reload changes that).
+	 * sends each failure, and announces the attempt after a failure with `loading`. A bound hold (or one whose `bound`
+	 * waits for a slot) whose object leaves `live` goes back to pending (slice 7b §6), except while a reload's swap runs
+	 * in place; a bound one whose object went live with another attempt (a swap) re-subscribes to its members.
 	 */
 	moved(): void {
 		const current = this.#state;
-		if (current.kind !== "pending") return;
-		const state = this.#object!.state;
-		if (state.kind === "live") {
+		const object = this.#object;
+		if (object === undefined) return;
+		if (current.kind === "bound" || current.kind === "binding") {
+			const { kind } = object.state;
+			if (kind === "live") {
+				if (current.kind === "bound" && object.instance !== current.instance) {
+					// In a batch: the changed members' frames leave as one `state` message.
+					const { link } = this.#provider;
+					link.host.batch.within(() => this.#rebound(current, object), link.context);
+				}
+				return;
+			}
+			// Its instance still changes (a swap's old one, a restart's drain, a live failure's admitted commits): it follows
+			// it on until it stopped (slice 7b, decision "References are the only indirection").
+			if (current.kind === "bound" && object.attachable === current.instance) {
+				if (kind === "failed") this.#stopForeign(current, object);
+				return;
+			}
+			if (current.kind === "binding" && kind === "loading" && object.swapsInPlace) return;
+			this.#unbind(object.state.kind === "failed" ? object.state.cause.error : undefined);
+		}
+		this.#pending(object);
+	}
+
+	/** Member `followed` failed with `error`: its failure waits to be sent, replacing one still waiting. */
+	#memberFailed(followed: Followed, error: unknown): void {
+		followed.pending.take();
+		const failure = { member: followed.index, error: wireError(error) };
+		const at = this.#failed.findIndex(({ member }) => member === followed.index);
+		// A new list when one is replaced (rare): a list handed to an entry is never written to.
+		if (at === -1) this.#failed.push(failure);
+		else this.#failed = this.#failed.map((pending, i) => (i === at ? failure : pending));
+	}
+
+	/** Member `index` has a value again: a failure of it still waiting to be sent (rare) is not sent. */
+	#memberHealed(index: number): void {
+		if (this.#failed.length > 0) this.#failed = this.#failed.filter(({ member }) => member !== index);
+	}
+
+	/**
+	 * Its object failed live and still publishes the commits it admitted before: the members following another object's
+	 * sources stop at once, its own follow on until it unbinds (as references do, G1 "own"; Sol).
+	 */
+	#stopForeign(state: Bound, object: ChordObject): void {
+		const { version } = this.contract;
+		for (const { index, source, subscriber } of state.followed) {
+			if (!(source instanceof Source)) continue;
+			if (object.followed(state.names.state[index]!, version).kind !== "live") source.unsubscribe(subscriber);
+		}
+	}
+
+	/**
+	 * Its object left `live` (a restart, a parked swap, a live failure): no longer subscribed or waiting for a slot, its
+	 * calls in flight rejected (`error`, or `unavailable`), pending again; a `loading` tells the consumer it rebinds
+	 * (a failure is sent by `#pending`, which a consumer applies to a bound hold as a rebinding too, model §5).
+	 */
+	#unbind(error: ChordError | undefined): void {
+		const state = this.#state;
+		if (state.kind === "bound") unfollow(state);
+		this.#changes = [];
+		this.#failed = [];
+		this.#retired = NO_RETIRED;
+		this.#touched = false;
+		const reason = error ?? new ChordError({ code: "unavailable", message: `hold ${this.id}: its object rebinds` });
+		this.#provider.unbound(this, reason);
+		this.#state = PENDING;
+		if (error === undefined) this.#provider.send({ kind: "loading", hold: this.id });
+	}
+
+	/**
+	 * A swap of its object went live in place (slice 7b §5): each member it follows is re-subscribed to the new
+	 * attempt's (its mapping at an older version), sending `[["r", value]]` for each whose value changed; another
+	 * variant than the bound one, or a version that became older or current, sends a fresh `bound` instead.
+	 */
+	#rebound(state: Bound, object: ChordObject): void {
+		const { version } = this.contract;
+		const adapted = version !== object.served.contract.version;
+		if (adapted !== state.adapted || object.variant !== state.variantName) {
+			unfollow(state);
 			this.#state = BINDING;
 			this.#provider.bind(this, this.#provider.link.context);
-		} else if (state.kind === "failed") {
-			// Each failure and each new cause (a parked object's blocker changed) is a message of its own.
-			const { cause, retryAt } = state;
-			const retryIn = retryAt === undefined ? {} : { retryIn: Math.max(0, retryAt - Date.now()) };
-			const failed = { kind: cause.kind, error: wireError(cause.error) };
-			this.#provider.send({ kind: "failed", hold: this.id, cause: failed, ...retryIn });
-			this.#state = { kind: "pending", toldFailed: true };
-		} else if (state.kind === "loading" && current.toldFailed) {
-			this.#provider.send({ kind: "loading", hold: this.id });
-			this.#state = PENDING;
+			return;
 		}
+		const sources = new Map<string, DeriveSource>();
+		for (const [index, member] of state.names.state.entries()) {
+			const source = object.liveMember(member, version);
+			sources.set(member, source);
+			// What it was bound to: the replaced instance's member.
+			const old = state.sources.get(member)!;
+			if (source === old) continue;
+			const was = currentOf(old);
+			// Read before it is followed: a derive computed now publishes no first frame of its own.
+			let now:
+				| { readonly kind: "value"; readonly value: JsonValue }
+				| { readonly kind: "failed"; readonly error: unknown };
+			try {
+				now = { kind: "value", value: source.value };
+			} catch (error) {
+				now = { kind: "failed", error };
+			}
+			// A member it did not follow (a constant) is followed from now on: a later swap may make it change.
+			let followed = state.followed.find((each) => each.index === index);
+			if (followed === undefined) followed = this.#follow(state, index, source);
+			else {
+				if (followed.source instanceof Source) followed.source.unsubscribe(followed.subscriber);
+				followed.source = source;
+				if (source instanceof Source) source.subscribe(followed.subscriber);
+			}
+			// Failed on the new instance (its mapping throws): its failure is sent; it heals with `[["r", value]]` (Sol).
+			if (now.kind === "failed") {
+				this.#touch();
+				this.#memberFailed(followed, now.error);
+				continue;
+			}
+			if (now.value === was?.value) continue;
+			this.#touch();
+			this.#memberHealed(index);
+			this.#changes.push([followed, [["r", now.value]]]);
+		}
+		this.#state = { ...state, instance: object.instance, sources };
 	}
 
 	/**
@@ -255,6 +380,27 @@ export class Hold implements Holder, UnboundRequest {
 		this.#restart(state.request);
 	}
 
+	/** The pending hold's part of `moved`: binds once live, sends each failure, announces the next attempt. */
+	#pending(object: ChordObject): void {
+		const current = this.#state;
+		if (current.kind !== "pending") return;
+		const state = object.state;
+		if (state.kind === "live") {
+			this.#state = BINDING;
+			this.#provider.bind(this, this.#provider.link.context);
+		} else if (state.kind === "failed") {
+			// Each failure and each new cause (a parked object's blocker changed) is a message of its own.
+			const { cause, retryAt } = state;
+			const retryIn = retryAt === undefined ? {} : { retryIn: Math.max(0, retryAt - Date.now()) };
+			const failed = { kind: cause.kind, error: wireError(cause.error) };
+			this.#provider.send({ kind: "failed", hold: this.id, cause: failed, ...retryIn });
+			this.#state = { kind: "pending", toldFailed: true };
+		} else if (state.kind === "loading" && current.toldFailed) {
+			this.#provider.send({ kind: "loading", hold: this.id });
+			this.#state = PENDING;
+		}
+	}
+
 	/** Starts a refused hold again, announced with `loading`. */
 	#restart(request: HoldRequest): void {
 		this.#state = PENDING;
@@ -264,7 +410,7 @@ export class Hold implements Holder, UnboundRequest {
 
 	/** Calls a method of the held object as the hold's caller. */
 	call(method: string, args: unknown, context: Context): Promise<unknown> {
-		return this.#object!.call(method, args, context, this.caller);
+		return this.#object!.call(method, args, context, this.caller, this.contract.version);
 	}
 
 	/**
@@ -293,8 +439,12 @@ export class Hold implements Holder, UnboundRequest {
 		const state = this.#bindTo(object);
 		const members: BoundEntry["members"][number][] = [];
 		const failed: FailedMember[] = [];
-		for (const [member, source] of object.stateMembers) {
-			const index = state.names.state.indexOf(member);
+		const { version } = this.contract;
+		const current = version === contract.version;
+		for (const [index, member] of state.names.state.entries()) {
+			// An older version's members are its instance's mapping (its refusals unbound it before: `ChordObject`).
+			const source = current ? object.stateMembers.get(member)! : object.liveMember(member, version);
+			state.sources.set(member, source);
 			let value: JsonValue;
 			try {
 				value = source.value;
@@ -368,7 +518,7 @@ export class Hold implements Holder, UnboundRequest {
 		const state = this.#state;
 		const { host } = this.#provider.link;
 		if (state.kind === "bound") {
-			for (const { source, subscriber } of state.followed) source.unsubscribe(subscriber);
+			unfollow(state);
 		} else if (state.kind === "unplaced" || (state.kind === "refused" && state.cause.kind === "waiting")) {
 			host.unindex(state.request.type, this);
 		}
@@ -389,12 +539,50 @@ export class Hold implements Holder, UnboundRequest {
 		this.#provider.send({ kind: "gone", hold: this.id, error: wireError(error) });
 	}
 
-	/** The binding: its variant and names, with no member followed yet. */
+	/** The binding: its variant and names at the hold's version, with no member followed yet. */
 	#bindTo(object: ChordObject): Bound {
-		const data = currentVariants(object.served.contract).get(object.variant!)!;
-		const state: Bound = { kind: "bound", variant: data, names: variantNames(data), followed: [] };
+		const variantName = object.variant!;
+		const data = variantsAt(object.served.contract, this.contract.version).get(variantName)!;
+		const instance = object.instance;
+		const adapted = this.contract.version !== object.served.contract.version;
+		const names = variantNames(data);
+		const sources = new Map<string, DeriveSource>();
+		const state: Bound = {
+			kind: "bound",
+			variantName,
+			variant: data,
+			names,
+			followed: [],
+			instance,
+			sources,
+			adapted,
+		};
 		this.#state = state;
 		return state;
+	}
+
+	/** A hold over a link follows its object's instances in `moved` (re-subscribed, or a fresh `bound`). */
+	retarget(): void {}
+
+	/** It moves nothing in `retarget`. */
+	readonly following = false;
+
+	/**
+	 * Its object left it (slice 7b §6): its type was removed (`not_served`) or its provider no longer binds the hold's
+	 * version (`version`): no longer subscribed, its calls in flight rejected, it waits refused with `removal.cause` in
+	 * the host's index (a publication starts it again) and the consumer is sent `failed`, which unbinds a bound hold.
+	 */
+	removed(removal: Removal): void {
+		const state = this.#state;
+		if (state.kind === "released" || this.#object === undefined) return;
+		if (state.kind === "bound") unfollow(state);
+		this.#changes = [];
+		this.#failed = [];
+		this.#retired = NO_RETIRED;
+		this.#touched = false;
+		this.#provider.unbound(this, removal.cause.error);
+		this.#object = undefined;
+		this.#refuse(this.contract, removal.cause);
 	}
 
 	/**
@@ -403,7 +591,7 @@ export class Hold implements Holder, UnboundRequest {
 	 * drops what was pending for it and replaces a failure not sent yet (one at most per member, however long the
 	 * consumer stalls); the value after it (a root replacement) replaces the failure. A retirement waits for a value.
 	 */
-	#follow(state: Bound, index: number, source: Source): void {
+	#follow(state: Bound, index: number, source: DeriveSource): Followed {
 		const followed: Followed = {
 			index,
 			source,
@@ -411,16 +599,10 @@ export class Hold implements Holder, UnboundRequest {
 				advance: (call) => {
 					this.#touch();
 					if (call.kind === "failed") {
-						followed.pending.take();
-						const failure = { member: index, error: wireError(call.error) };
-						const at = this.#failed.findIndex(({ member }) => member === index);
-						// A new list when one is replaced (rare): a list handed to an entry is never written to.
-						if (at === -1) this.#failed.push(failure);
-						else this.#failed = this.#failed.map((pending, i) => (i === at ? failure : pending));
+						this.#memberFailed(followed, call.error);
 						return;
 					}
-					// Rare: a failure of this member still waits to be sent.
-					if (this.#failed.length > 0) this.#failed = this.#failed.filter(({ member }) => member !== index);
+					this.#memberHealed(index);
 					const { ops, retired } = call;
 					// A retired derive's frame may carry no ops (rule 21): only the flag travels.
 					if (ops.length > 0) this.#changes.push([followed, ops]);
@@ -434,8 +616,10 @@ export class Hold implements Holder, UnboundRequest {
 			encoder: encoder(),
 			pending: new PendingOps(),
 		};
-		source.subscribe(followed.subscriber);
+		// A constant never changes: nothing to subscribe to (a swap may bring a source, `#rebound`).
+		if (source instanceof Source) source.subscribe(followed.subscriber);
 		state.followed.push(followed);
+		return followed;
 	}
 
 	/** Takes the current batch's changes; the hold is untouched again. */
@@ -482,6 +666,20 @@ export class Hold implements Holder, UnboundRequest {
 			hold: this.id,
 			cause: { kind: cause.kind, error: wireError(cause.error) },
 		});
+	}
+}
+
+/** Stops following every member of a bound hold. */
+function unfollow(state: Bound): void {
+	for (const { source, subscriber } of state.followed) if (source instanceof Source) source.unsubscribe(subscriber);
+}
+
+/** The current value of `source`, `undefined` when it throws (a failed member). */
+function currentOf(source: DeriveSource): { readonly value: JsonValue } | undefined {
+	try {
+		return { value: source.value };
+	} catch {
+		return undefined;
 	}
 }
 

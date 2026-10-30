@@ -1,4 +1,4 @@
-// A registry on a host (slice 8 §1): its provider, its contributions in table order (`contribution.ts`), the table
+// A registry on a host (slice 8 §1): its provider (replaced or removed by a reload, slice 7b §3), its contributions in table order (`contribution.ts`), the table
 // and its lazy composition (marked when the table changes, composed when read or followed, in the batch's
 // deliveries), the reports of conflicts and failures (once per episode), and the values its readers follow by
 // version.
@@ -55,6 +55,14 @@ type Composition = {
 
 const NEVER: Composition = { good: undefined, failure: undefined };
 
+/**
+ * Checks a registry provider as a setup served it (declaration policy: plugin code is bundled without type checks):
+ * `compose` is a function.
+ */
+export function checkProvider(name: string, provider: RegistryProvider<unknown, unknown>): void {
+	if (typeof provider?.compose !== "function") throw new Error(`registry ${name}: compose is a function`);
+}
+
 /** One registry of a host. */
 export class RegistryRecord {
 	readonly name: string;
@@ -100,18 +108,30 @@ export class RegistryRecord {
 		return value;
 	}
 
-	/** Serves the registry with `provider` at `version` (the defining plugin's facet); a second serve is refused. */
+	/**
+	 * Serves the registry with `provider` at `version` (the defining plugin's facet, checked by `checkProvider` when
+	 * its setup ran), replacing the provider a reload changed, inside a batch: the table composes again (lazily).
+	 */
 	serve(version: number, provider: RegistryProvider<unknown, unknown>): void {
-		if (this.#provider !== undefined) throw new Error(`registry ${this.name} is served twice`);
-		// Declaration policy: plugin code is bundled without type checks.
-		if (typeof provider?.compose !== "function") throw new Error(`registry ${this.name}: compose is a function`);
 		this.#provider = { version, provider };
+		this.#table = undefined;
+		this.#invalidate();
 	}
 
-	/** The first composition, at the end of `load`'s setups, inside one batch for every served registry. */
+	/**
+	 * A reload removed the defining plugin, inside a batch: no provider serves it; its readers' values fail
+	 * `unavailable/undeclared` (a reader parked on it waits `not_served`), its contributions stay in the table.
+	 */
+	unserve(): void {
+		this.#provider = undefined;
+		this.#table = undefined;
+		this.#composition = NEVER;
+		this.#invalidate();
+	}
+
+	/** The first composition of a served registry, at `load`'s publication or a reload's commit, inside its batch. */
 	composeServed(): void {
 		if (this.#provider === undefined) return;
-		this.#invalidate();
 		this.start();
 	}
 

@@ -135,6 +135,8 @@ export class ChordStore implements Store {
 	/** The open host's listener for `storage_failed` (told once) and batch; one host per store (rule 7). */
 	#attachment: Attachment | undefined;
 	#closing: Promise<void> | undefined;
+	/** The versions migrations of tables announced (`announceTable`), by SQL name, until their last commit. */
+	readonly #announced = new Map<string, number>();
 	/** The recorded tables, by SQL name; changed only after a step's `COMMIT`. */
 	readonly #catalog: Map<string, TableRecord>;
 	/** The ends of the exports holding the queue or waiting for it, which closing the store calls. */
@@ -215,6 +217,25 @@ export class ChordStore implements Store {
 	/** The recorded table `name` (its SQL name), as of the last commit. */
 	table(name: string): TableRecord | undefined {
 		return this.#catalog.get(name);
+	}
+
+	/**
+	 * The version table `name` is at or is being migrated to: the recorded one, or a higher one a migration announced
+	 * before its first commit (`announceTable`), so an old handle is refused before its SQL could queue behind the
+	 * migration's DDL (fix round 1, Sol 8).
+	 */
+	tableVersion(name: string): number | undefined {
+		const recorded = this.#catalog.get(name)?.version;
+		const announced = this.#announced.get(name);
+		return announced === undefined || (recorded !== undefined && recorded >= announced) ? recorded : announced;
+	}
+
+	/** Announces a migration of table `name` to `version` until the returned withdrawal (after its last commit). */
+	announceTable(name: string, version: number): () => void {
+		this.#announced.set(name, version);
+		return () => {
+			if (this.#announced.get(name) === version) this.#announced.delete(name);
+		};
 	}
 
 	/** Attaches the open host; a store attached to an open host is refused (rule 7). */

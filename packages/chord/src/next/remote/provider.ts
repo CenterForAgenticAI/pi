@@ -251,6 +251,20 @@ export class ProviderSide {
 		this.#binding.delete(hold);
 	}
 
+	/**
+	 * A served hold left its object's binding (slice 7b §6, model §5): its unsent pending ops and a queued `bound` are
+	 * dropped (the ack slots of messages already sent stay until their `ack`), its calls in flight rejected with `error`
+	 * (each slot freed once).
+	 */
+	unbound(hold: Hold, error: ChordError): void {
+		this.unbind(hold);
+		for (const [id, call] of this.#calls) {
+			if (call.hold !== hold) continue;
+			if (call.kind === "served") call.abort.abort(error);
+			this.reply(id, { kind: "error", call: id, error: wireError(error) });
+		}
+	}
+
 	/** A hold's members changed in the current batch; its flush sends or queues it. */
 	touched(hold: Hold): void {
 		if (this.#touched.length === 0) this.link.host.batch.flushing((context) => this.#flush(context));
@@ -445,12 +459,16 @@ export class ProviderSide {
 		// The side closed during the batch: nothing is sent.
 		if (holds.length === 0) return;
 		this.#touched = [];
+		// A hold touched in this batch may have left its binding since (a reload unbound it).
 		if (this.#free) {
-			this.#sendOwn({ kind: "state", holds: holds.map((hold) => hold.entry(context)) });
+			const entries: StateEntry[] = [];
+			for (const hold of holds) if (hold.bound) entries.push(hold.entry(context));
+			if (entries.length > 0) this.#sendOwn({ kind: "state", holds: entries });
 			return;
 		}
-		// Only a bound hold is touched, and a bound hold never waits for its binding.
+		// A bound hold never waits for its binding.
 		for (const hold of holds) {
+			if (!hold.bound) continue;
 			hold.queue();
 			this.#waiting.add(hold);
 		}

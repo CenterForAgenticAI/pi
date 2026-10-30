@@ -13,7 +13,7 @@ const NO_OPS: readonly Op[] = [];
 
 /** A source following one document address; `value` is the document's, or `initial()` while it is absent. */
 export abstract class AddressSource extends Source {
-	/** The documents of the object whose document this is (a member source asks whose source it follows). */
+	/** The documents of the object whose document this is (an attempt asks whether a member is its own). */
 	abstract readonly owner: Documents;
 	/** The ops of the current batch's frame, and whether the document was retired in it. */
 	#ops = NO_OPS;

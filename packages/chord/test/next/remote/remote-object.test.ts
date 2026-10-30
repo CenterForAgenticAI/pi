@@ -470,7 +470,7 @@ forEachCodec(() => {
 			]);
 		});
 
-		it("apply bound in one batch: each member gets one frame [['r', value]] and a fresh decoder", async () => {
+		it("apply bound in one batch: each member gets one frame (a diff from its last value) and a fresh decoder", async () => {
 			const { client, peer } = await rawProvider();
 			const notes = client.hold(Notes, { session: "S1" }, context);
 			await bindNext(peer, [{ text: "a" }]);
@@ -483,7 +483,8 @@ forEachCodec(() => {
 			const hold = await bindNext(next, [{ text: "a" }, { text: "b" }]);
 			await delivered();
 			const list = [{ text: "a" }, { text: "b" }];
-			expect(frames).toEqual([[list, [["r", list]]]]);
+			// One frame each, a diff from the last value the reference kept while its hold re-bound.
+			expect(frames).toEqual([[list, [["p", [], 1, 0, [{ text: "b" }]]]]]);
 			expect(counts).toEqual([[2, [["r", 2]]]]);
 			// The fresh decoder: the provider's new encoder starts over, interning paths anew.
 			next.send({
@@ -713,7 +714,7 @@ forEachCodec(() => {
 			expect(notes.state.value).toEqual({ kind: "live" });
 		});
 
-		it("a member watch before the first binding waits for it, and rejects when it fails or is released (race 16)", async () => {
+		it("a member watch before the first binding waits for it through a failure, and rejects when released (race 16)", async () => {
 			const { client, peer } = await rawProvider();
 			const bound = client.hold(Notes, { session: "S1" }, context);
 			const failing = client.hold(Notes, { session: "S2" }, context);
@@ -730,8 +731,17 @@ forEachCodec(() => {
 			});
 			released.release();
 			expect((await watches[0]!).value).toBe(1);
-			expect(await rejection(watches[1]!)).toEqual(error);
 			expect(await rejection(watches[2]!)).toEqual({ code: "released", message: "app.notes: released" });
+			// A failure is waited through (Opus G3): the watch rejects only when its reference ends.
+			let settled = false;
+			const settle = (): void => {
+				settled = true;
+			};
+			void watches[1]!.then(settle, settle);
+			await transported();
+			expect([failing.state.value.kind, settled]).toEqual(["failed", false]);
+			failing.release();
+			expect(await rejection(watches[1]!)).toMatchObject({ code: "released" });
 		});
 	});
 

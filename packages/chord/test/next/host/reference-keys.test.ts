@@ -1,9 +1,10 @@
-// Tests of keyed members across attempts (slice 6a §1.2, §1.4, §12): the keys references hold on an object's keyed
-// members, frozen while it is failed, re-bound by name (loaded first) when its next attempt goes live, released once.
+// Tests of the keys a reference holds (slice 6a §12; decision "References are the only indirection" (4)): its key
+// watches and factory pins of an object's keyed members, holding their last values while it is failed (one `failed`
+// call), pinned again on its next instance once that is live (one frame), released once.
 
 import { describe, expect, it, vi } from "vitest";
-import { BACKGROUND_CONTEXT as context, withAbortSignal } from "../../../src/context/index.ts";
-import { int, keyed, local, obj, str } from "../../../src/next/contracts/index.ts";
+import { type Context, BACKGROUND_CONTEXT as context, withAbortSignal } from "../../../src/context/index.ts";
+import { int, keyed, local, method, obj, str } from "../../../src/next/contracts/index.ts";
 import { ChordError } from "../../../src/next/data/index.ts";
 import { defineState, type KeyedHandle } from "../../../src/next/documents/index.ts";
 import { createHost, defineFacet, type Self } from "../../../src/next/host/index.ts";
@@ -71,7 +72,7 @@ async function served(which: () => string) {
 }
 
 describe("a failed object's held keys", () => {
-	it("keep their last values and get no frames (at, watch, a derive over at); the provider goes on", async () => {
+	it("keep their last values and get the failure once (at, watch, a derive over at); the provider goes on", async () => {
 		const { host, a, exposer, viewer, set, fail } = await served(() => "a");
 		const values = changesOf(await viewer.value.watch(context));
 		const keyWatch = (await exposer.notes.watch("k", context))!;
@@ -82,14 +83,14 @@ describe("a failed object's held keys", () => {
 		await delivered();
 		expect(exposer.state.value.kind).toBe("failed");
 		expect([viewer.value.value, viewer.double.value, keyWatch.value]).toEqual([{ n: 1 }, 2, { n: 1 }]);
-		expect([values, keyed]).toEqual([[], []]);
+		expect([values, keyed].map((calls) => calls.map((call) => call.kind))).toEqual([["failed"], ["failed"]]);
 		expect(valuesOf(direct)).toEqual([{ n: 3 }]);
 		await host.close(context);
 	});
 });
 
 describe("re-binding when a new attempt goes live", () => {
-	it("follows the new attempt's member of the same name (one frame); the old provider's pin is released", async () => {
+	it("pins again on the new instance's member of the same name (one frame); the old provider's pin is released", async () => {
 		let which = "a";
 		const { host, exposer, viewer, set, fail, providers } = await served(() => which);
 		const values = changesOf(await viewer.value.watch(context));
@@ -110,13 +111,15 @@ describe("re-binding when a new attempt goes live", () => {
 		await set("b", 4);
 		await set("a", 5);
 		await delivered();
-		expect(valuesOf(values)).toEqual([{ n: 2 }, { n: 4 }]);
-		expect(valuesOf(keyed)).toEqual([{ n: 2 }, { n: 4 }]);
+		// The failure once, then whole values (the first after a failure is `[["r", value]]`).
+		expect(valuesOf(values)).toEqual([{ failed: "boom" }, { n: 2 }, { n: 4 }]);
+		expect(valuesOf(keyed)).toEqual([{ failed: "boom" }, { n: 2 }, { n: 4 }]);
+		// A derive over the key reads its last value meanwhile: it does not fail.
 		expect(valuesOf(doubles)).toEqual([4, 8]);
 		await host.close(context);
 	});
 
-	it("loads a cold persisted key of the new member before the new attempt goes live", async () => {
+	it("loads a cold persisted key of the new member once the new instance is live (the last value meanwhile)", async () => {
 		const Stored = defineState("notes", {
 			schema: Schema,
 			version: 1,
@@ -167,7 +170,8 @@ describe("re-binding when a new attempt goes live", () => {
 		failLive(attempted, exposers[0]!, new ChordError({ code: "unavailable", message: "boom" }));
 		exposer.retry();
 		(await host.get(Exposer, {}, context)).release();
-		expect([viewer.value.value, viewer.double.value]).toEqual([{ n: 10 }, 20]);
+		// The key loads from the store after the new instance went live: one frame then.
+		await vi.waitFor(() => expect([viewer.value.value, viewer.double.value]).toEqual([{ n: 10 }, 20]));
 		await host.close(context);
 		await store.close(context);
 	});
@@ -378,7 +382,7 @@ describe("a keyed watch whose object closes while it is set up", () => {
 });
 
 describe("chains and releases", () => {
-	it("a key re-exposed through two objects freezes with the middle one and follows its next attempt", async () => {
+	it("a key re-exposed through two objects holds with the middle one (the failure once) and follows its next instance", async () => {
 		const Outer = local("app.outer", { version: 1, params: {}, members: { notes: keyed(Schema) } });
 		const OuterViewer = local("app.outer-viewer", { version: 1, params: {}, members: { value: Schema } });
 		let which = "a";
@@ -420,13 +424,13 @@ describe("chains and releases", () => {
 			context,
 		);
 		await delivered();
-		expect([viewer.value.value, values]).toEqual([{ n: 1 }, []]);
+		expect([viewer.value.value, values.map((call) => call.kind)]).toEqual([{ n: 1 }, ["failed"]]);
 		which = "b";
 		middle.retry();
 		(await host.get(Exposer, {}, context)).release();
 		await delivered();
 		expect(viewer.value.value).toEqual({ n: 2 });
-		expect(valuesOf(values)).toEqual([{ n: 2 }]);
+		expect(valuesOf(values)).toEqual([{ failed: "boom" }, { n: 2 }]);
 		await host.close(context);
 	});
 
@@ -470,10 +474,11 @@ describe("a key whose first pin still loads at startup (scenario 20, Astra)", ()
 			this: ChordObject,
 			member,
 			key,
+			version,
 			ctx,
 		) {
 			await gate.promise;
-			return original.call(this, member, key, ctx);
+			return original.call(this, member, key, version, ctx);
 		});
 		const host = createHost({ onError: () => {} });
 		let done = false;
@@ -502,5 +507,56 @@ describe("a key whose first pin still loads at startup (scenario 20, Astra)", ()
 		expect(ref.value.value).toEqual({ n: 4 });
 		await host.close(context);
 		expect(premature).toBe(false);
+	});
+});
+
+describe("a released key leaves its document (final review)", () => {
+	it("collects a reference whose key watch stopped while another reference pins the same key (Astra)", async () => {
+		const Rows = defineState("rows", {
+			version: 1,
+			schema: obj({ n: int() }),
+			initial: () => ({ n: 1 }),
+			keyed: true,
+		});
+		const Type = local("app.key-gc", {
+			version: 1,
+			params: {},
+			members: { rows: keyed(obj({ n: int() })), set: method() },
+		});
+		const facet = defineFacet((h) =>
+			h.serve(Type, (_, self) => {
+				const rows = self.state(Rows);
+				const set = async (ctx: Context) => {
+					await rows.change(
+						"a",
+						(draft) => {
+							draft.n = 2;
+						},
+						ctx,
+					);
+					return null;
+				};
+				return { rows, set };
+			}),
+		);
+		const host = createHost({ onError: () => {} });
+		await host.load([{ name: "@app/key-gc", facet }], context);
+		const keeper = await host.get(Type, {}, context);
+		await keeper.set(context);
+		const kept = (await keeper.rows.watch("a", context))!;
+		kept.start(async () => {});
+		const released = await (async () => {
+			const ref = await host.get(Type, {}, context);
+			const watch = (await ref.rows.watch("a", context))!;
+			watch.start(async () => {});
+			await watch.stop();
+			ref.release();
+			return new WeakRef(ref);
+		})();
+		await flushed();
+		await expectCollected(released);
+		await kept.stop();
+		keeper.release();
+		await host.close(context);
 	});
 });
