@@ -378,6 +378,39 @@ describe("parked on dependencies (dependency model §3)", () => {
 		top.release();
 	});
 
+	it("walks a diamond on one host once: a shared parked dependency passes a retry on once (audit A5)", async () => {
+		const Top = local("app.top", { version: 1, params: {}, members: { n: int() } });
+		const Left = local("app.left", { version: 1, params: { id: int() }, members: { n: int() } });
+		const Mid = local("app.mid", { version: 1, params: {}, members: { n: int() } });
+		let cores = 0;
+		const { host } = await loaded((h) => {
+			h.serve(Core, () => {
+				if (++cores === 1) throw new Error("bug");
+				return { n: constant(cores) };
+			});
+			h.serve(Mid, (_, self) => ({ n: self.get(Core, {}).n }));
+			h.serve(Left, (_, self) => ({ n: self.get(Mid, {}).n }));
+			h.serve(Top, (_, self) => {
+				const a = self.get(Left, { id: 1 }).n;
+				const b = self.get(Left, { id: 2 }).n;
+				return { n: self.derive([a, b], ([x, y]) => x + y) };
+			});
+		});
+		const top = host.hold(Top, {}, context);
+		await flushed();
+		const passed = vi.spyOn(Attempt.prototype, "retryDependencies");
+		try {
+			top.retry();
+			// Top, both lefts, and the shared mid once (its second visit through the other left is ignored).
+			expect(passed).toHaveBeenCalledTimes(4);
+		} finally {
+			passed.mockRestore();
+		}
+		await flushed();
+		expect([cores, top.n.value]).toEqual([2, 4]);
+		top.release();
+	});
+
 	it("fails every object of a cycle broken; none is retried", async () => {
 		const Ping = local("app.ping", { version: 1, params: {}, members: { n: int() } });
 		const Pong = local("app.pong", { version: 1, params: {}, members: { n: int() } });
@@ -1573,7 +1606,7 @@ describe("reload: the pure swap (slice 7b §5)", () => {
 describe("reload: a stuck routine call past the handover", () => {
 	fakeTimers();
 
-	it("fences an old routine call stuck past the handover: its transactions are refused", async () => {
+	it("an old routine call stuck past the handover: drain_timeout, the old attempt sealed, its commit refused (audit A12)", async () => {
 		const stuck = Promise.withResolvers<void>();
 		let late: Promise<unknown> | undefined;
 		const errors: HostError[] = [];

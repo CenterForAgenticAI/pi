@@ -65,11 +65,8 @@ export class AdaptedMembers {
 	readonly #instance: AdaptedInstance;
 	/** The members read so far: a mapping derive, or the instance's member itself (unchanged). */
 	readonly #members = new Map<string, DeriveSource>();
-	/**
-	 * The mapping derives it made, with the instance's members each maps (an unchanged member is the instance's own: it
-	 * never detaches that one).
-	 */
-	readonly #derives = new Map<Derive, readonly DeriveSource[]>();
+	/** The mapping derives it made (an unchanged member is the instance's own: it never detaches that one). */
+	readonly #derives = new Set<Derive>();
 	/** The keys held so far, by the instance's key document. */
 	#keys: Map<string, Map<DeriveSource, MappedKey>> | undefined;
 
@@ -143,14 +140,9 @@ export class AdaptedMembers {
 		return this.#keyed(member);
 	}
 
-	/** The instance's members mapping derive `source` maps; `undefined` for a source it did not make. */
-	mapped(source: DeriveSource): readonly DeriveSource[] | undefined {
-		return source instanceof Derive ? this.#derives.get(source) : undefined;
-	}
-
 	/** Its instance ended, or the version's last reference left: its derives go (their watches end with `error`). */
 	detach(error: Error): void {
-		for (const derive of this.#derives.keys()) derive.detach(error);
+		for (const derive of this.#derives) derive.detach(error);
 		this.#derives.clear();
 		this.#members.clear();
 		for (const byDocument of this.#keys?.values() ?? []) {
@@ -201,7 +193,7 @@ export class AdaptedMembers {
 					(values) => map(Object.fromEntries(names.map((name, index) => [name, values[index]]))),
 					batch,
 				);
-		this.#derives.set(derive, sources);
+		this.#derives.add(derive);
 		// The sources are the instance's members already.
 		derive.attach(
 			(source) => source as DeriveSource,

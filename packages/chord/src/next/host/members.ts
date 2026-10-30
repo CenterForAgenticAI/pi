@@ -19,9 +19,7 @@ import {
 	type ContributionContent,
 	type Contributor,
 	RegistryContribution,
-	type RegistryEdge,
 	type RegistryRecord,
-	RegistryValueSource,
 } from "../registries/internal.ts";
 import { type Derive, type DeriveInput, type DeriveSource, NativeSource } from "../state/internal.ts";
 import { type Binding, resolveKeyed, resolveWatchable } from "./reference.ts";
@@ -131,18 +129,15 @@ export function attachDerives(
 
 /**
  * A contribution of `contributor` at `version` to `record`, as Chord follows it: a Chord watchable (a source, a
- * constant, a document handle, a reference member, a native source) is followed, anything else is a plain value,
- * whatever methods it has (registries carry natives). Refused (`invalid/cycle`) when it is a registry's value that
- * closes a cycle of registries, through the tables and the contributor's `pending` edges.
+ * constant, a document handle, a reference member, a native source: another registry's value too) is followed,
+ * anything else is a plain value, whatever methods it has (registries carry natives).
  */
 export function contributionOf(
 	record: RegistryRecord,
 	contributor: Contributor,
 	version: number,
 	value: unknown,
-	pending: readonly RegistryEdge[],
 ): RegistryContribution {
-	if (value instanceof RegistryValueSource) record.assertNoCycle(value, pending);
 	return new RegistryContribution(record, contributor, version, contentOf(value));
 }
 

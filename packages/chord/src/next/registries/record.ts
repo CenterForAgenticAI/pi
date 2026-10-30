@@ -38,9 +38,6 @@ export type RegistryError =
 			readonly version: number;
 	  };
 
-/** One registry's value contributed to another: `from`'s table reads `to`. */
-export type RegistryEdge = { readonly from: RegistryRecord; readonly to: RegistryRecord };
-
 /** The provider as served: the defining plugin's version, `compose` and adapters. */
 type Provider = { readonly version: number; readonly provider: RegistryProvider<unknown, unknown> };
 
@@ -79,11 +76,6 @@ export class RegistryRecord {
 	#composing = false;
 	/** The conflicts the last good composition reported, by key: a conflict is reported once per episode. */
 	#conflicts = new Set<string>();
-	/**
-	 * Registries whose values are contributions in this one's table, each with how many: a contribution that would
-	 * close a cycle of them is refused. An edge lives as long as its contribution is in the table.
-	 */
-	readonly #reads = new Map<RegistryRecord, number>();
 	/** The values readers follow, by version; made by the first reader of a version. */
 	readonly #values = new Map<number, RegistryValueSource>();
 
@@ -135,26 +127,11 @@ export class RegistryRecord {
 		this.start();
 	}
 
-	/**
-	 * Refuses a contribution that is `source`'s value when it would close a cycle (declaration policy, at
-	 * `contribute`): through the registries in the tables now and the edges `pending` (the contributing attempt's
-	 * earlier declarations, which enter the tables only once it is live).
-	 */
-	assertNoCycle(source: RegistryValueSource, pending: readonly RegistryEdge[]): void {
-		const { record } = source;
-		if (record === undefined) return;
-		if (record.#reaches(this, new Set(), pending)) {
-			throw invalid("cycle", `registries ${this.name} and ${record.name} read each other`);
-		}
-	}
-
 	/** Adds a live contributor's contribution, inside a batch: the table changes. */
 	add(contribution: RegistryContribution): void {
 		const at = this.#contributions.findIndex((other) => compareContributors(contribution, other) < 0);
 		// A new list per change (contributors come and go rarely): a composition keeps the one it was built from.
 		this.#contributions = this.#contributions.toSpliced(at < 0 ? this.#contributions.length : at, 0, contribution);
-		const { reads } = contribution;
-		if (reads !== undefined) this.#reads.set(reads, (this.#reads.get(reads) ?? 0) + 1);
 		contribution.follow();
 		this.#invalidate();
 	}
@@ -164,12 +141,6 @@ export class RegistryRecord {
 		const at = this.#contributions.indexOf(contribution);
 		if (at < 0) return;
 		this.#contributions = this.#contributions.toSpliced(at, 1);
-		const { reads } = contribution;
-		if (reads !== undefined) {
-			const left = this.#reads.get(reads)! - 1;
-			if (left === 0) this.#reads.delete(reads);
-			else this.#reads.set(reads, left);
-		}
 		contribution.unfollow();
 		this.#invalidate();
 	}
@@ -242,7 +213,6 @@ export class RegistryRecord {
 	close(): void {
 		for (const contribution of this.#contributions) contribution.unfollow();
 		this.#contributions = [];
-		this.#reads.clear();
 		this.#table = undefined;
 		this.#dirty = false;
 		for (const value of this.#values.values()) value.close();
@@ -316,19 +286,6 @@ export class RegistryRecord {
 			table.push(entry);
 		}
 		return same && previous!.length === table.length ? previous! : table;
-	}
-
-	/** Whether `target` is reached from here through the tables' edges and `pending`. */
-	#reaches(target: RegistryRecord, visited: Set<RegistryRecord>, pending: readonly RegistryEdge[]): boolean {
-		if (this === target) return true;
-		visited.add(this);
-		for (const next of this.#reads.keys()) {
-			if (!visited.has(next) && next.#reaches(target, visited, pending)) return true;
-		}
-		for (const { from, to } of pending) {
-			if (from === this && !visited.has(to) && to.#reaches(target, visited, pending)) return true;
-		}
-		return false;
 	}
 }
 

@@ -28,7 +28,7 @@ import type { Dependency } from "./dependencies.ts";
 import type { AnyHost } from "./host.ts";
 import type { CloseFailed, NativeCloseReason } from "./native.ts";
 import { type Ended, type Failed, LIVE, LOADING, type RefState } from "./ref-state.ts";
-import { type CheckedParams, type Followed, type RetryOperation, retryOperation, type Target } from "./reference.ts";
+import { type CheckedParams, type Followed, type RetryWalk, retryWalk, type Target } from "./reference.ts";
 import { type RetrySource, RetryWakes } from "./retry-on.ts";
 import { migratesTables, type Recorded } from "./staging.ts";
 import { uuidv7 } from "./uuid.ts";
@@ -150,9 +150,6 @@ const CLOSE: NativeCloseReason = { kind: "close" };
 
 const RELOAD: NativeCloseReason = { kind: "reload" };
 
-/** How many retry ids an object remembers: a diamond's shortcut only (a ring is stopped by a retry's `through`). */
-const RETRIES_KEPT = 8;
-
 /** No dependencies waited for: the shared empty list. */
 const NO_DEPENDENCIES: readonly Dependency[] = [];
 
@@ -202,11 +199,6 @@ export class ChordObject implements Target {
 	 */
 	#firstOutcome: PromiseWithResolvers<void> | undefined;
 	#hasFirstOutcome = false;
-	/**
-	 * The ids of the last retry operations it handled (at most `RETRIES_KEPT`, the newest last; made by the first): a
-	 * retry reaching it twice through a diamond is handled once.
-	 */
-	#retried: string[] | undefined;
 	/** The error of the last failed attempt, or the last cause a parked attempt showed, until one goes live. */
 	#lastFailure: ChordError | undefined;
 	/** Ends the object when its type's `linger` passed after its last reference; cleared by a new one. */
@@ -220,11 +212,11 @@ export class ChordObject implements Target {
 	 */
 	#exposed: Attempt | undefined;
 	/**
-	 * Whether references still follow `#exposed`, which may still change: `all` while it is live, drains (a restart) or
-	 * retires (a swap's old instance until its successor is live or it retired); `own` after its live failure until the
-	 * commits admitted before it published (its own members only, 6a's freeze); `none` once it stopped changing.
+	 * Whether references still follow `#exposed`, which may still change: while it is live, drains (a restart), retires
+	 * (a swap's old instance until its successor is live or it retired), or failed live until the commits admitted
+	 * before it published (every member, its own and re-exposed ones: audit A10); not once it stopped changing.
 	 */
-	#follows: "all" | "own" | "none" = "none";
+	#following = false;
 	/** The one timer storing its jobs' held state changes by their earliest deadline (D8), while one is held. */
 	#flush: { readonly deadline: number; readonly timer: ReturnType<typeof setTimeout> } | undefined;
 	/** Its wake signals (`retryOn`), the last attempt's declaration; made by the first. */
@@ -289,11 +281,6 @@ export class ChordObject implements Target {
 		return !this.#hasFirstOutcome;
 	}
 
-	/** An object here: it is not held on a link. */
-	get heldOnLink(): false {
-		return false;
-	}
-
 	/**
 	 * The error of its last failure while none went live since: a failed attempt's, or the cause its parked attempt
 	 * showed last (kept when the dependency falls back to `loading`, so a getter's deadline names it).
@@ -349,21 +336,16 @@ export class ChordObject implements Target {
 	}
 
 	/**
-	 * `ref.retry()` and a `retry` message, as `operation` (handled once): an attempt now when failed (a broken one too)
-	 * or waiting, its backoff window skipped; passed on to the failed dependencies while parked `failed { waiting }`,
-	 * with this object added to the objects it passed through (at most `CHAIN`: a retry stops past 32 hops); ignored
-	 * otherwise (an attempt runs, or it is live), and when it passed through this object already (a ring) or was handled
-	 * here already (a diamond).
+	 * `ref.retry()` and a `retry` message, as a step of `walk` (handled once per walk: a diamond reaches it twice): an
+	 * attempt now when failed (a broken one too) or waiting, its backoff window skipped; passed on to the failed
+	 * dependencies while parked `failed { waiting }`; ignored otherwise (an attempt runs, or it is live).
 	 */
-	retry(operation: RetryOperation = retryOperation()): void {
-		const instance = this.#instance;
-		if (instance !== undefined && operation.through.includes(instance)) return;
-		if (this.#handled(operation.id)) return;
+	retry(walk: RetryWalk = retryWalk()): void {
+		if (walk.visited.has(this)) return;
+		walk.visited.add(this);
 		const state = this.#state;
 		if (state.kind === "activating") {
-			const { through } = operation;
-			if (state.shown.kind !== "failed" || instance === undefined || through.length >= CHAIN) return;
-			state.attempt.retryDependencies({ id: operation.id, through: [...through, instance] });
+			if (state.shown.kind === "failed") state.attempt.retryDependencies(walk);
 			return;
 		}
 		if (state.kind !== "waiting" && state.kind !== "failed") return;
@@ -394,7 +376,7 @@ export class ChordObject implements Target {
 
 	/**
 	 * Whether a reload's pure swap runs in place: the new attempt neither parked nor failed yet. Holds stay bound
-	 * meanwhile (their calls wait at the gate) and re-subscribe once it is live.
+	 * meanwhile (their calls wait at the gate) and get a fresh `bound` once it is live.
 	 */
 	get swapsInPlace(): boolean {
 		const state = this.#state;
@@ -414,8 +396,8 @@ export class ChordObject implements Target {
 	/**
 	 * What a reference of `version` follows for state member `member` now (decision "References are the only
 	 * indirection"): the shown instance's member (its mapping at an older version) while that instance is live, while a
-	 * swap brings its successor in place, and for its own members after a live failure until its admitted commits
-	 * published; else nothing: `failed` with the cause's error, or `loading`, with that member to take a last value from.
+	 * swap brings its successor in place, and after a live failure until its admitted commits published; else nothing:
+	 * `failed` with the cause's error, or `loading`, with that member to take a last value from.
 	 */
 	followed(member: string, version: number): Followed {
 		const exposed = this.#exposed;
@@ -430,11 +412,7 @@ export class ChordObject implements Target {
 				if (failure.code !== "contract_mismatch") lacking = failure;
 			}
 		}
-		const follows = this.#follows;
-		if (
-			exposed !== undefined &&
-			(follows === "all" || (follows === "own" && shown !== undefined && exposed.owns(shown)))
-		) {
+		if (exposed !== undefined && this.#following) {
 			if (shown !== undefined) return { kind: "live", source: shown, instance: exposed };
 			if (lacking !== undefined) return { kind: "lacking", error: lacking };
 			return { kind: "loading", last: undefined, instance: undefined };
@@ -455,7 +433,7 @@ export class ChordObject implements Target {
 	 * attached to); `undefined` once it stopped changing.
 	 */
 	get attachable(): Attempt | undefined {
-		return this.#follows === "none" ? undefined : this.#exposed;
+		return this.#following ? this.#exposed : undefined;
 	}
 
 	/** The live instance, which references pin their keys on (a new one: they pin again); `undefined` when not live. */
@@ -582,10 +560,9 @@ export class ChordObject implements Target {
 		this.#lastFailure = error;
 		this.#withdraw(attempt);
 		attempt.seal(error);
-		// Members following another object's sources stop now: no commit of this object changes them.
-		this.#follows = "own";
-		// The commits admitted before the seal adopt and publish once (frames included); then the other members stop
-		// too. A retry's factory and hydration wait for both (its ending), so no old commit lands in a new attempt.
+		// Its references follow every member on until the commits admitted before the seal adopted and published once
+		// (frames included), then stop. A retry's factory and hydration wait for both (its ending), so no old commit
+		// lands in a new attempt.
 		const frozen = this.documents.settled().then(() => this.#stopFollowing(attempt));
 		const closing = Promise.all([attempt.close(END), frozen]).then(([failures]) => {
 			attempt.detach();
@@ -921,7 +898,7 @@ export class ChordObject implements Target {
 		const unbound = this.#unbindUnfit(attempt);
 		this.#state = { kind: "live", attempt };
 		this.#exposed = attempt;
-		this.#follows = "all";
+		this.#following = true;
 		const { contributions } = attempt;
 		// The old attempt's contributions leave in the batch the new ones enter (slice 7b §5), so no reader sees a gap.
 		const leaving = swap !== undefined && !swap.parked ? swap.old.contributions : NO_CONTRIBUTIONS;
@@ -934,7 +911,7 @@ export class ChordObject implements Target {
 		}
 		this.#lastFailure = undefined;
 		this.host.wentLive(this);
-		// Its references move to the new instance (one frame each); holds re-subscribe.
+		// Its references move to the new instance (one frame each); holds get a fresh `bound`.
 		this.#notify();
 		this.#settleFirstOutcome();
 		swap?.done.resolve();
@@ -1091,8 +1068,8 @@ export class ChordObject implements Target {
 	 * object lets it go (a reference made later never attached to it: it takes nothing from it).
 	 */
 	#stopFollowing(attempt: Attempt): void {
-		if (this.#exposed !== attempt || this.#follows === "none") return;
-		this.#follows = "none";
+		if (this.#exposed !== attempt || !this.#following) return;
+		this.#following = false;
 		this.#notify();
 		// Its references took their values (`#notify` retargets them at once): a failed object keeps no ended instance.
 		this.#exposed = undefined;
@@ -1137,7 +1114,7 @@ export class ChordObject implements Target {
 		// An object of the start barrier's cohort that ends before its first outcome settles it as ended.
 		this.#settleFirstOutcome();
 		// Sealed: its instance stops changing; its references take their last values from it.
-		this.#follows = "none";
+		this.#following = false;
 		const holders = [...this.#holders];
 		this.#holders.clear();
 		this.host.unreferenced(this, holders, this.#context);
@@ -1239,19 +1216,6 @@ export class ChordObject implements Target {
 		if (state.kind === "ended") throw this.ended();
 		if (state.kind === "failed") throw state.failure.cause.error;
 		throw new ChordError({ code: "not_ready", message: `${this.label}: not live yet` });
-	}
-
-	/**
-	 * Whether the retry operation `id` reached it before (among the last few: the diamond's shortcut; a ring is stopped
-	 * by `through`); records it otherwise.
-	 */
-	#handled(id: string): boolean {
-		this.#retried ??= [];
-		const retried = this.#retried;
-		if (retried.includes(id)) return true;
-		if (retried.length === RETRIES_KEPT) retried.shift();
-		retried.push(id);
-		return false;
 	}
 
 	/** The settlement of its first outcome (once): dependents parked on it check their first pass again. */

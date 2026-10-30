@@ -73,12 +73,6 @@ export class RegistryValueSource extends FollowedSource<unknown> {
 		this.#registered = { kind: "open", record };
 	}
 
-	/** Its registry's record while the host is open. */
-	get record(): RegistryRecord | undefined {
-		const registered = this.#registered;
-		return registered.kind === "open" ? registered.record : undefined;
-	}
-
 	/** The composition (or its mapping) at its last good value; throws the failure when there is none. */
 	get value(): unknown {
 		const start = this.start();

@@ -1,10 +1,9 @@
 // The `ctx` a method handler gets (§8): its call's context, who called, the calling host's incarnation, and
-// call-scoped references; a routine call's ctx and its fence (slice 7b); and the abort signal of a call's context, linked to long-lived sources until it settles.
+// call-scoped references; and the abort signal of a call's context, linked to long-lived sources until it settles.
 
 import { type Context, type ContextKey, withAbortSignal, withoutAbortSignal } from "../../context/index.ts";
 import type { Contract, ParamsOf } from "../contracts/index.ts";
 import { ChordError, type Principal } from "../data/index.ts";
-import type { SealToken } from "../documents/internal.ts";
 import type { AnyHost, GetOptions } from "./host.ts";
 import type { Binding, Reference } from "./reference.ts";
 
@@ -90,19 +89,6 @@ export class CallContext implements Ctx {
 		this.#references = undefined;
 		this.#settling?.abort();
 		for (const binding of references) binding.release();
-	}
-}
-
-/**
- * The ctx of one routine call: a handler's ctx whose transactions carry its routines' token (`fence`), so a stuck
- * routine call past a swap's handover is fenced on its own (slice 7b §5).
- */
-export class RoutineContext extends CallContext {
-	readonly fence: SealToken;
-
-	constructor(context: Context, caller: Caller, host: AnyHost, fence: SealToken) {
-		super(context, caller, host);
-		this.fence = fence;
 	}
 }
 

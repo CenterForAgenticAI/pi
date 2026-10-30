@@ -18,6 +18,7 @@ import {
 } from "../contracts/internal.ts";
 import { ChordError, type FailureCause, type Principal } from "../data/index.ts";
 import { Keyed, type KeyedSlot, type SealToken, Singleton } from "../documents/internal.ts";
+import { RETRY_HOPS } from "../link/internal.ts";
 import { type Batch, Constant, type DeriveSource, Source } from "../state/internal.ts";
 import type { PinnedKey } from "./attempt.ts";
 import { type Caller, withLinkedAbortSignal } from "./ctx.ts";
@@ -28,7 +29,6 @@ import { type Ended, type Failed, LOADING, ReferenceState, type RefState } from 
 import { ReferenceKeys } from "./reference-keys.ts";
 import { ReferenceSource } from "./reference-source.ts";
 import type { UnboundRequest } from "./unbound.ts";
-import { uuidv7 } from "./uuid.ts";
 
 /**
  * A reference: a local contract's members, or for a remote contract the members of the variant its object chose,
@@ -82,11 +82,6 @@ export interface Target {
 	/** Its instance id while it activates on this host (Q5); `undefined` otherwise and over a link. */
 	readonly activationId: string | undefined;
 	/**
-	 * Whether it is held on a link now: a remote attempt answers for it there (`parked_long` counts it while it is
-	 * loading); not while its path has no link, and never for an object here.
-	 */
-	readonly heldOnLink: boolean;
-	/**
 	 * Whether it holds up this host's start barrier: an object here without its first outcome (decision (a)); a remote
 	 * object never does.
 	 */
@@ -120,10 +115,10 @@ export interface Target {
 	 */
 	pinKey(member: string, key: string, version: number, context: Context): Promise<PinnedKey>;
 	/**
-	 * `ref.retry()` (`operation` once per retry, deduping diamonds): an attempt now if failed; an object parked on failed
-	 * dependencies passes it on; ignored otherwise.
+	 * `ref.retry()`, as one step of `walk`: an attempt now if failed; an object parked on failed dependencies passes it
+	 * on; ignored otherwise.
 	 */
-	retry(operation: RetryOperation): void;
+	retry(walk: RetryWalk): void;
 	/**
 	 * The chain of activation waits from this object to `target`, both included (Q5); `undefined` when there is none.
 	 * `visited` keeps a search over shared dependencies linear in the waits.
@@ -152,16 +147,15 @@ export type Followed =
 	  };
 
 /**
- * One `ref.retry()` passing on through parked objects, across links too (the `retry` message's `operation` and
- * `through`): its id (a uuidv7) and the instance ids of the objects it passed through, added hop by hop (at most
- * `CHAIN`). An object in `through` drops it, so a ring of hosts stops after one lap however many retries run at once;
- * an object remembers the last few ids it handled too, so a diamond retries it once.
+ * One retry's walk through parked objects on this host (dependency model §3.7, audit A5): the objects it reached (one
+ * reached again, through a diamond, ignores it) and the hop budget a `retry` message to another host carries (none is
+ * sent at 0, so a waiting ring of hosts stops).
  */
-export type RetryOperation = { readonly id: string; readonly through: string[] };
+export type RetryWalk = { readonly visited: Set<ChordObject>; readonly hops: number };
 
-/** A new retry operation, through nothing yet (`ref.retry()`, a `retry` message that names none). */
-export function retryOperation(): RetryOperation {
-	return { id: uuidv7(), through: [] };
+/** A walk starting here: `ref.retry()`'s, with the first host's budget, or a `retry` message's, with one hop less. */
+export function retryWalk(hops = RETRY_HOPS): RetryWalk {
+	return { visited: new Set(), hops };
 }
 
 /** A reference's params as L1 checked them, with their identity key. */
@@ -632,14 +626,14 @@ export class Binding implements Holder, UnboundRequest {
 	}
 
 	/**
-	 * `ref.retry()`, as `operation` (one per `ref.retry()`, passed on through parked objects): the object is asked for
-	 * an attempt now (ignored unless failed; a parked one passes it on); a refused reference is placed again; one
-	 * waiting in the index is left as it is (an event wakes it).
+	 * `ref.retry()`, as a step of `walk` (a new one for `ref.retry()`, passed on through parked objects): the object is
+	 * asked for an attempt now (ignored unless failed; a parked one passes it on); a refused reference is placed again;
+	 * one waiting in the index is left as it is (an event wakes it).
 	 */
-	retry(operation: RetryOperation = retryOperation()): void {
+	retry(walk: RetryWalk = retryWalk()): void {
 		const state = this.#state;
 		if (state.kind === "bound") {
-			state.target.retry(operation);
+			state.target.retry(walk);
 			return;
 		}
 		if (state.kind !== "refused") return;

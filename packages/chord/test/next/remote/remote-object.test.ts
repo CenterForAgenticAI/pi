@@ -648,7 +648,7 @@ forEachCodec(() => {
 			await transported();
 			expect(notes.state.value).toMatchObject({ kind: "failed", cause: { kind: "broken" } });
 			notes.retry();
-			expect(await peer.next("retry")).toEqual({ kind: "retry", hold, operation: expect.any(String) });
+			expect(await peer.next("retry")).toEqual({ kind: "retry", hold, hops: 16 });
 			bindHold(peer, hold);
 			await transported();
 			expect(notes.state.value).toEqual({ kind: "live" });
@@ -794,7 +794,7 @@ forEachCodec(() => {
 			expect(errors).toEqual([]);
 		});
 
-		it("dropped and never bound again, stays parked loading: nothing fails, no parked_long without a link", async () => {
+		it("dropped and never bound again, stays parked loading: nothing fails, one parked_long (audit A11)", async () => {
 			const errors: HostError[] = [];
 			const client = createHost<TestPrincipal>({ readyTimeout: 1_000, onError: (error) => errors.push(error) });
 			const peer = await rawParent(client);
@@ -805,8 +805,10 @@ forEachCodec(() => {
 			peer.close();
 			await transported();
 			await vi.advanceTimersByTimeAsync(10_000);
-			// No remote attempt answers for it while its path has no link (fix round 1, Opus F2).
-			expect(errors).toEqual([]);
+			// A diagnostic whatever the blocker (audit A11): its path without a link too; nothing failed.
+			expect(errors).toEqual([
+				{ kind: "parked_long", object: "app.view", waitingFor: "app.notes(S1)", state: "loading", since: 0 },
+			]);
 			expect(client.hold(View, {}, context).state.value).toEqual({ kind: "loading" });
 		});
 

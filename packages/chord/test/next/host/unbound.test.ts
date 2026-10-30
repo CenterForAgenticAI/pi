@@ -60,7 +60,9 @@ describe("the index", () => {
 		// The others stay indexed until their own names are served.
 		index.wake(["app.b"]);
 		expect(b.log).toEqual(["wake"]);
-		expect(index.delete("app.a", a)).toBe(false);
+		// Woken out of the index: a later publication wakes none of them again.
+		index.wakeAll();
+		expect([a.log, b.log, c.log]).toEqual([["wake"], ["wake"], ["wake"]]);
 	});
 
 	it("ends the requests of a revoked principal only, and every request at the host's close", () => {

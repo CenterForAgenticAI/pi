@@ -180,7 +180,7 @@ describe("a failed object's members", () => {
 });
 
 describe("the window of a live failure", () => {
-	it("members following another object's sources hold at once, while an admitted commit of the object runs", async () => {
+	it("every member follows on while an admitted commit of the object runs, then all hold (audit A10)", async () => {
 		const Counter = defineState("counter", { schema: obj({ n: int() }), version: 1, initial: () => ({ n: 0 }) });
 		const Persisted = defineState("own", {
 			schema: obj({ n: int() }),
@@ -229,12 +229,14 @@ describe("the window of a live failure", () => {
 		failLive(attempted, exposer!, new ChordError({ code: "unavailable", message: "boom" }));
 		await provider.set(9, context);
 		await delivered();
-		expect([exposed.n.value, frames.map((call) => call.kind)]).toEqual([1, ["failed"]]);
+		// A re-exposed member shows one more change of its provider in the window.
+		expect([exposed.n.value, frames.map((call) => call.kind)]).toEqual([9, ["value"]]);
 		held.release();
 		await change;
 		await delivered();
-		// The object's own admitted commit still publishes once; then its member holds (the failure once).
+		// The object's own admitted commit still publishes once; then every member holds (the failure once).
 		expect(valuesOf(owned)).toEqual([{ n: 5 }, { failed: "boom" }]);
+		expect([exposed.n.value, frames.map((call) => call.kind)]).toEqual([9, ["value", "failed"]]);
 		await host.close(context);
 		await store.close(context);
 	});
@@ -443,9 +445,9 @@ describe("a member the new attempt's variant lacks", () => {
 		two.retry();
 		(await host.get(Two, {}, context)).release();
 		await delivered();
-		// Its object's failure once, then the new variant's lack of it.
+		// The failed instance is followed until its admitted commits published (audit A10), when the retry's attempt
+		// loads already (no failure call for it); then the new variant's lack of it.
 		expect(calls).toEqual([
-			{ kind: "failed", error: expect.objectContaining({ code: "unavailable" }) },
 			{ kind: "failed", error: expect.objectContaining({ code: "invalid", reason: "member" }) },
 		]);
 		expect(() => n.value).toThrow('app.two (variant view) has no state member "n"');

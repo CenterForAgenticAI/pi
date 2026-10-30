@@ -30,12 +30,7 @@ import { binaryCodec, type Codec, type Compression, type Link, type PartLimits }
 import { linkLimits } from "../link/internal.ts";
 import type { Registry, RegistryValue } from "../registries/index.ts";
 import type { RegistryValueSource } from "../registries/internal.ts";
-import {
-	type RegistryContribution,
-	type RegistryEdge,
-	type RegistryError,
-	RegistryRecord,
-} from "../registries/internal.ts";
+import { type RegistryContribution, type RegistryError, RegistryRecord } from "../registries/internal.ts";
 import {
 	type HoldRequest,
 	HostLink,
@@ -158,10 +153,18 @@ export type HostError =
 	/** A blocked run was dropped without `finish`: aborted, or its object ended. */
 	| { readonly kind: "job_dropped"; readonly object: string; readonly job: string; readonly id: string }
 	/**
-	 * An attempt parked `readyTimeout` (since `since`, `Date.now()` time) while `waitingFor`, a remote attempt, is only
-	 * loading: once per parking episode, a diagnostic of a ring across hosts started at the same moment (nothing fails).
+	 * An attempt parked longer than `readyTimeout` (since `since`, `Date.now()` time), whatever its blocker: once per
+	 * parking episode, naming the first blocker in declaration order (`waitingFor`, a reference's label or `registry
+	 * <name>`) and its `state`; a diagnostic of a ring across hosts started at the same moment or a long wait (nothing
+	 * fails).
 	 */
-	| { readonly kind: "parked_long"; readonly object: string; readonly waitingFor: string; readonly since: number };
+	| {
+			readonly kind: "parked_long";
+			readonly object: string;
+			readonly waitingFor: string;
+			readonly state: "loading" | "failed";
+			readonly since: number;
+	  };
 
 /**
  * What `accept` and `connect` take: the principal of the host at the other end, as this host stamps it; `trusted` skips
@@ -321,9 +324,7 @@ export type ReloadedObject = { readonly object: string } & (
  */
 export type Serving =
 	| { readonly kind: "object"; readonly object: ChordObject }
-	| { readonly kind: "waiting"; readonly cause: FailureCause }
-	/** The host is installing a reload and the hold does not fit its running code: `loading` until the reload ends. */
-	| { readonly kind: "installing" };
+	| { readonly kind: "waiting"; readonly cause: FailureCause };
 
 /** A published plugin: its facet (an unchanged reload passes the same object), its registries and contributions. */
 type LoadedPlugin<P extends Principal> = {
@@ -359,12 +360,6 @@ export function createHost<P extends Principal = Principal, R extends JsonValue 
 	return new ChordHost<P, R>(options);
 }
 
-/** No registry edges pending (a facet's contributions). */
-const NO_EDGES: readonly RegistryEdge[] = [];
-
-/** A hold for a type or version the running code does not serve, while a reload installs. */
-const INSTALLING: Serving = { kind: "installing" };
-
 /** No activation chain (Q5). */
 const NO_CHAIN: readonly string[] = [];
 
@@ -395,11 +390,6 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 	readonly #plugins = new Map<string, LoadedPlugin<P>>();
 	/** The reloads, one after another (slice 7b §1): the last one's end, which the next one waits for. */
 	#reloading: Promise<unknown> = Promise.resolve();
-	/**
-	 * While a reload stages (slice 7b §2, model §1): requests that do not fit the running code wait here `installing`
-	 * (`loading`) by name, re-evaluated when the reload ends, by its commit or its rejection; `undefined` otherwise.
-	 */
-	#installing: Map<UnboundRequest, string> | undefined;
 	/** By identity, in the order they went live (the others where they were created). */
 	readonly #objects = new Map<string, ChordObject>();
 	/** Teardowns still running, by identity: the next instance of an identity waits for its previous ones. */
@@ -499,10 +489,7 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 		if (context.abortSignal?.aborted) throw reloadAborted();
 		const plan = this.#stageReload(facets, context);
 		// Aborted while it staged (a setup may abort it synchronously): rejected as a staging error, nothing changed.
-		if (context.abortSignal?.aborted) {
-			this.#installed();
-			throw reloadAborted();
-		}
+		if (context.abortSignal?.aborted) throw reloadAborted();
 		const started = this.#commit(plan, context);
 		const objects = await this.#report(started, context);
 		const { added, changed, removed } = plan;
@@ -510,40 +497,33 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 	}
 
 	/**
-	 * Staging (slice 7b §2): the host is installing meanwhile; every setup runs into a staged table (`stagePlugins`),
-	 * every object of a changed or removed plugin whose type is still served has its new factory recorded, which
-	 * decides its fate. A throw rejects the reload with nothing changed (the requests that waited `installing` are
-	 * evaluated again against the running code).
+	 * Staging (slice 7b §2), synchronous (no request or arriving hold meets it half done): every setup runs into a
+	 * staged table (`stagePlugins`), every object of a changed or removed plugin whose type is still served has its new
+	 * factory recorded, which decides its fate. A throw rejects the reload with nothing changed.
 	 */
 	#stageReload(facets: readonly PluginFacet<P>[], context: Context): ReloadPlan<P> {
-		this.#installing = new Map();
-		try {
-			const staged = stagePlugins(facets, this.#stagingHost());
-			const byName = facetsByName(facets);
-			const added: string[] = [];
-			const changed: string[] = [];
-			const removed = [...this.#plugins.keys()].filter((name) => !byName.has(name));
-			for (const [name, facet] of byName) {
-				const loaded = this.#plugins.get(name);
-				if (loaded === undefined) added.push(name);
-				else if (loaded.facet !== facet) changed.push(name);
-			}
-			const reloaded = new Set([...changed, ...removed]);
-			const fates: PlannedFate[] = [];
-			for (const object of this.#objects.values()) {
-				if (!reloaded.has(object.served.plugin)) continue;
-				const served = staged.types.get(object.served.contract.name);
-				if (served === undefined || served.kind !== object.served.kind) {
-					fates.push({ kind: "end", object });
-					continue;
-				}
-				fates.push({ kind: object.reloadFate(recordFactory(object, served, context)), object, served });
-			}
-			return { staged, facets: byName, added, changed, removed, fates };
-		} catch (error) {
-			this.#installed();
-			throw error;
+		const staged = stagePlugins(facets, this.#stagingHost());
+		const byName = facetsByName(facets);
+		const added: string[] = [];
+		const changed: string[] = [];
+		const removed = [...this.#plugins.keys()].filter((name) => !byName.has(name));
+		for (const [name, facet] of byName) {
+			const loaded = this.#plugins.get(name);
+			if (loaded === undefined) added.push(name);
+			else if (loaded.facet !== facet) changed.push(name);
 		}
+		const reloaded = new Set([...changed, ...removed]);
+		const fates: PlannedFate[] = [];
+		for (const object of this.#objects.values()) {
+			if (!reloaded.has(object.served.plugin)) continue;
+			const served = staged.types.get(object.served.contract.name);
+			if (served === undefined || served.kind !== object.served.kind) {
+				fates.push({ kind: "end", object });
+				continue;
+			}
+			fates.push({ kind: object.reloadFate(recordFactory(object, served, context)), object, served });
+		}
+		return { staged, facets: byName, added, changed, removed, fates };
 	}
 
 	/**
@@ -551,7 +531,7 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 	 * they were), the removed plugins' registry providers go and the reloaded ones' are replaced, their facet
 	 * contributions replaced by plugin, every changed registry composed once; a removed type's presence list goes.
 	 * Then each object takes its fate, host-lifetime objects of new types start, and the publication wakes the
-	 * requests waiting for the names the reload serves, and those that waited `installing`.
+	 * requests waiting for the names the reload serves.
 	 */
 	#commit(plan: ReloadPlan<P>, context: Context): readonly StartedFate[] {
 		const { staged, added, changed, removed } = plan;
@@ -585,7 +565,6 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 			if (type.kind === "local" && type.hostLifetime) this.#object(type, EMPTY_PARAMS, undefined, context);
 		}
 		this.#unbound.wake(names);
-		this.#installed();
 		return started;
 	}
 
@@ -624,14 +603,6 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 		} catch {
 			throw reloadAborted();
 		}
-	}
-
-	/** The reload ends (committed or rejected): requests that waited `installing` are evaluated again. */
-	#installed(): void {
-		const installing = this.#installing;
-		this.#installing = undefined;
-		// Those the commit's publication woke already are not woken again.
-		for (const [request, name] of installing ?? []) if (this.#unbound.delete(name, request)) request.wake();
 	}
 
 	/** This host as staging sees it: whom it acts as, its address and its presence lists. */
@@ -804,15 +775,6 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 	}
 
 	/**
-	 * `request` (a hold) waits `installing` under `name` (the type it asks for) until the running reload ends, by its
-	 * commit or its rejection (model §1, §5).
-	 */
-	installing(name: string, request: UnboundRequest): void {
-		this.#installing?.set(request, name);
-		this.#unbound.add(name, request);
-	}
-
-	/**
 	 * `binding`, whose object left it (its type removed, its version no longer bound: slice 7b §6), waits unbound with
 	 * `cause` under its type's name; a publication places it again (`params` checked as it was, under `context`).
 	 */
@@ -916,10 +878,7 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 			unboundCause(served, Type.kind, Type.name, Type.version, Type.fingerprint) ??
 			this.#misplaced(Type, served!, params.params);
 		if (unbound !== undefined) {
-			const place = (): void => this.#place(binding, Type, params, context);
-			// Installing: it waits `loading` for the reload's end, which may serve it.
-			if (this.#installing !== undefined) this.#installing.set(binding, Type.name);
-			this.#wait(binding, Type.name, this.#installing === undefined ? unbound : undefined, place);
+			this.#wait(binding, Type.name, unbound, () => this.#place(binding, Type, params, context));
 			return undefined;
 		}
 		// Checked above: served here at the caller's version.
@@ -944,8 +903,7 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 		const { type, version, fingerprint, chain = NO_CHAIN } = request;
 		const served = this.#types.get(type);
 		const unbound = unboundCause(served, "remote", type, version, fingerprint);
-		if (unbound !== undefined)
-			return this.#installing === undefined ? { kind: "waiting", cause: unbound } : INSTALLING;
+		if (unbound !== undefined) return { kind: "waiting", cause: unbound };
 		// Checked above: a remote type served here.
 		const remote = served as Extract<Served, { readonly kind: "remote" }>;
 		const checked = checkParams(remote.contract, params, context);
@@ -1239,13 +1197,11 @@ export class ChordHost<P extends Principal = Principal, R extends JsonValue = Js
 				registries.push(registry);
 			}
 			const contributions = (staged.contributions.get(name) ?? []).map(({ registry, value }) =>
-				// A facet contributes no registry's value (it reads none): no edges of its own.
 				contributionOf(
 					this.registryRecord(registry.name),
 					{ plugin: name, type: undefined },
 					registry.version,
 					value,
-					NO_EDGES,
 				),
 			);
 			for (const contribution of contributions) contribution.record.add(contribution);

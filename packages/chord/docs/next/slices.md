@@ -134,7 +134,7 @@ pattern, no code. Decided cuts are noted where they apply.
 | 18 | platform bindings as core objects | doc (8) |
 | 19 | `host.references` (presence) | 4b |
 | 20 | flows kept by their owner, the `steps` helper, the Questions service | doc (5); deferred decisions #9, #11 |
-| 21 | `host.reload`: staging, atomic commit, pure swaps, native restarts, removal and re-serving, `installing` | 7b |
+| 21 | `host.reload`: staging, atomic commit, pure swaps, native restarts, removal and re-serving | 7b |
 | 21 | loading plugins (loader D), dev loop; the rollout across hosts is the app's (decision "Slice 7b's open points" (3)) | 7c |
 | 22 | message format, header schema, unknown ids, one message per commit per link, consumers apply ops, plugin errors | 3a |
 | 22 | relays, size limits per part, compression at the origin, adapted bindings get diffs | 4a (relays), 4b (limits, compression), 7b |

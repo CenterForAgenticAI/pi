@@ -1,8 +1,10 @@
 // The keys a reference holds (slice 6a §12; decision "References are the only indirection" (4)): its key watches and
 // its factory's pins (`at(key)`) of its object's keyed members, one source per member and key shared by them, pinned on
-// the object's live instance (loaded, mapped to the reference's version). When the reference moves to a new instance
-// or a new object it pins the key there again, keeping the last value until that pin loads, then one frame; while it
-// points at nothing the key keeps its last value (one `failed` call when its target failed, none while it loads).
+// the object's live instance (loaded, mapped to the reference's version). While the object still follows the instance a
+// key is pinned on (a swap's old instance, a restart's drain, a live failure's admitted commits) the key follows it on,
+// as members do. When the reference moves to a new instance or a new object it pins the key there again, keeping the
+// last value until that pin loads, then one frame; while it points at nothing the key keeps its last value (one
+// `failed` call when its target failed, none while it loads).
 
 import { awaitWithContext, BACKGROUND_CONTEXT, type Context } from "../../context/index.ts";
 import { ChordError } from "../data/index.ts";
@@ -70,11 +72,13 @@ export class ReferenceKeys {
 
 	/**
 	 * Its reference's target changed, inside a batch: a key pins again on a new live instance (last value meanwhile);
-	 * while the target is not live it keeps its last value (one `failed` call for a failure) and its pin goes.
+	 * while the target is not live it follows the instance it is pinned on as long as the object does (a commit admitted
+	 * there still shows), then keeps its last value (one `failed` call for a failure) and its pin goes.
 	 */
 	follow(context: Context): void {
 		const target = this.#holder.target();
 		const instance = target?.instance;
+		const attachable = target?.attachable;
 		for (const byKey of this.#entries.values()) {
 			for (const entry of byKey.values()) {
 				if (instance !== undefined) {
@@ -82,6 +86,7 @@ export class ReferenceKeys {
 					if (entry.instance !== instance) this.#pin(entry).catch(() => {});
 					continue;
 				}
+				if (attachable !== undefined && entry.instance === attachable) continue;
 				const state = target?.state;
 				if (state?.kind === "failed") entry.source.fail(state.cause.error, context);
 				else entry.source.hold();

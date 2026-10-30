@@ -4,7 +4,6 @@
 import { type Dependent, type DeriveSource, handedOut, type NativeSource, Source } from "../state/internal.ts";
 import type { RegistryRecord } from "./record.ts";
 import type { RegistryEntry, RegistryProvider } from "./registry.ts";
-import { RegistryValueSource } from "./value.ts";
 
 /** Who contributes: a facet (by plugin) or a host-lifetime object (by plugin and type). */
 export type Contributor = { readonly plugin: string; readonly type: string | undefined };
@@ -60,14 +59,6 @@ export class RegistryContribution implements Dependent {
 	/** Stops following its source. */
 	unfollow(): void {
 		this.#followed()?.dependents.delete(this);
-	}
-
-	/** The registry whose value it is, when it is one (its edge in the cycle check, while it is in the table). */
-	get reads(): RegistryRecord | undefined {
-		const content = this.#content;
-		return content.kind === "native" && content.source instanceof RegistryValueSource
-			? content.source.record
-			: undefined;
 	}
 
 	/** Its source when it changes (a constant never does). */

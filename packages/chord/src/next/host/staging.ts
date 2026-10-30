@@ -13,7 +13,7 @@ import { bindProvider, checkParams } from "../data/internal.ts";
 import type { AnyDefinition } from "../documents/internal.ts";
 import type { JobDefinition } from "../jobs/index.ts";
 import type { Registry, RegistryProvider } from "../registries/index.ts";
-import { checkProvider, type RegistryEdge, RegistryValueSource } from "../registries/internal.ts";
+import { checkProvider, type RegistryValueSource } from "../registries/internal.ts";
 import { tableSqlName } from "../store/sql.ts";
 import type { ChordStore } from "../store/store.ts";
 import type { TableDefinition } from "../store/table.ts";
@@ -134,10 +134,9 @@ export type Recorded = {
  * Runs `served`'s factory for `object` (its params and principal) against a recording `self` and returns what it
  * declared. Every declaration check an attempt makes runs, without effects (declared twice; persisted data in a type
  * without a stable identity, on a host without a store, or claimed by another owner; contributions outside
- * host-lifetime objects, twice, or closing a cycle of registries; `retryOn` sources that do not outlive the attempt;
- * params; a document or job declared at an older version than the object's, or at its version with another schema);
- * a throw is the factory's. Handles it hands out are inert, except registry values (the host's own, which `retryOn`
- * and contributions check by kind).
+ * host-lifetime objects, or twice; `retryOn` sources that do not outlive the attempt; params; a document or job
+ * declared at an older version than the object's, or at its version with another schema); a throw is the factory's.
+ * Handles it hands out are inert, except registry values (the host's own, which `retryOn` checks by kind).
  */
 export function recordFactory(object: ChordObject, served: Served, context: Context): Recorded {
 	const recording = new RecordingSelf(object, served, context);
@@ -181,8 +180,6 @@ class RecordingSelf {
 	readonly #tables = new Map<string, TableDefinition>();
 	readonly #jobs = new Map<string, JobDefinition<unknown, unknown, unknown>>();
 	readonly #contributions = new Map<string, Registry<unknown, unknown>>();
-	/** The registry edges its contributions of other registries' values add (the cycle check of a real attempt). */
-	readonly #edges: RegistryEdge[] = [];
 	readonly #requests: string[] = [];
 
 	constructor(object: ChordObject, served: Served, context: Context) {
@@ -239,7 +236,7 @@ class RecordingSelf {
 	registry(R: Registry<unknown, unknown>): RegistryValueSource {
 		this.#assertDeclaring("registry");
 		this.#requests.push(R.name);
-		// The host's own value (an attempt declares the same one): `retryOn` and contributions check its kind.
+		// The host's own value (an attempt declares the same one): `retryOn` checks its kind.
 		return this.#object.host.registryRecord(R.name).value(R.version);
 	}
 
@@ -253,7 +250,7 @@ class RecordingSelf {
 		for (const source of sources) retrySource(source, this.#object.label);
 	}
 
-	contribute(R: Registry<unknown, unknown>, value: unknown): void {
+	contribute(R: Registry<unknown, unknown>): void {
 		this.#assertDeclaring("contribute");
 		const served = this.#served;
 		const { label } = this.#object;
@@ -262,11 +259,6 @@ class RecordingSelf {
 			throw new Error(`${label}: self.contribute is valid only in a local type with empty params`);
 		}
 		if (this.#contributions.has(R.name)) throw new Error(`${label}: registry ${R.name} is contributed to twice`);
-		const record = this.#object.host.registryRecord(R.name);
-		if (value instanceof RegistryValueSource) {
-			record.assertNoCycle(value, this.#edges);
-			if (value.record !== undefined) this.#edges.push({ from: record, to: value.record });
-		}
 		this.#contributions.set(R.name, R);
 	}
 

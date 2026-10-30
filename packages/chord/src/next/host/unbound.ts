@@ -31,12 +31,11 @@ export class UnboundIndex {
 		requests.add(request);
 	}
 
-	/** `request` ended or binds: it leaves the index; whether it was there. */
-	delete(name: string, request: UnboundRequest): boolean {
+	/** `request` ended or binds: it leaves the index. */
+	delete(name: string, request: UnboundRequest): void {
 		const requests = this.#byName.get(name);
-		if (requests === undefined || !requests.delete(request)) return false;
+		if (requests === undefined || !requests.delete(request)) return;
 		if (requests.size === 0) this.#byName.delete(name);
-		return true;
 	}
 
 	/** The host's publication: every request indexed (by any name) runs its check again, out of the index first. */

@@ -8,7 +8,6 @@ import type { Context } from "../../context/index.ts";
 import { type MethodData, takesNoArgs } from "../contracts/internal.ts";
 import { ChordError, isChordError } from "../data/index.ts";
 import { asChordError } from "../data/internal.ts";
-import type { RetryOperation } from "../host/internal.ts";
 import {
 	type BoundEntry,
 	type ConsumerMessage,
@@ -126,10 +125,9 @@ export class ConsumerSide {
 		this.forget(hold, error);
 	}
 
-	/** `ref.retry()` on a failed hold, as retry `operation`: the provider is asked for an attempt now. */
-	retry(hold: number, { id, through }: RetryOperation): void {
-		const passed = through.length === 0 ? {} : { through };
-		this.#link.send({ kind: "retry", hold, operation: id, ...passed });
+	/** `ref.retry()` on a failed hold, with `hops` left of its budget: the provider is asked for an attempt now. */
+	retry(hold: number, hops: number): void {
+		this.#link.send({ kind: "retry", hold, hops });
 	}
 
 	/** Drops hold `hold` from the tables; its calls, in flight and waiting, fail with `error` and free their slots. */

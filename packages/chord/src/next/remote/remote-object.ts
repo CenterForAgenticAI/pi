@@ -26,7 +26,7 @@ import {
 	LOADING,
 	type PinnedKey,
 	type RefState,
-	type RetryOperation,
+	type RetryWalk,
 	type Target,
 } from "../host/internal.ts";
 import {
@@ -112,11 +112,6 @@ export class RemoteObject implements Target {
 		return this.#state;
 	}
 
-	/** Whether its hold is on a link now (a remote attempt answers for it), not while its path has no link. */
-	get heldOnLink(): boolean {
-		return this.#hold !== undefined;
-	}
-
 	/** An object over a link is no blocker of this host's first pass. */
 	get blocksFirstPass(): false {
 		return false;
@@ -156,15 +151,12 @@ export class RemoteObject implements Target {
 	attach(link: HostLink): void {
 		const chain = this.#dependent?.activationChain();
 		this.#hold = { side: link.consumer, id: link.consumer.attach(this, chain) };
-		// Held on a link now: a parked dependent checks again (`parked_long` counts a hold on a link only).
-		this.#dependent?.dependencyMoved();
 	}
 
 	/** The link dropped: loading until a new link's hold is bound (`#startOver`). */
 	dropped(_error: ChordError): void {
 		this.#hold = undefined;
 		this.#startOver();
-		this.#dependent?.dependencyMoved();
 	}
 
 	/**
@@ -250,18 +242,18 @@ export class RemoteObject implements Target {
 	}
 
 	/**
-	 * `ref.retry()`: a failed object's provider is asked for an attempt (a hold it refused is started there again; a
-	 * parked object there passes it on as an operation of its own host). One that failed for a part past the link's
-	 * limits is placed anew and held with a new id, now or on its path's next link (a `hostAddress` that throws fails it
-	 * broken again).
+	 * `ref.retry()`, as a step of `walk`: a failed object's provider is asked for an attempt with the walk's hop budget,
+	 * none left: nothing is sent (a hold it refused is started there again; a parked object there passes it on with one
+	 * hop less). One that failed for a part past the link's limits is placed anew and held with a new id, now or on its
+	 * path's next link (a `hostAddress` that throws fails it broken again).
 	 */
-	retry(operation: RetryOperation): void {
+	retry(walk: RetryWalk): void {
 		if (this.#state.kind !== "failed") return;
 		if (this.#path === this.#host.unplaced) {
 			this.#place();
 			return;
 		}
-		this.#hold?.side.retry(this.#hold.id, operation);
+		if (walk.hops > 0) this.#hold?.side.retry(this.#hold.id, walk.hops);
 	}
 
 	/** Places a reference whose part was past the limits anew, on its path now (a throwing `hostAddress` fails it). */

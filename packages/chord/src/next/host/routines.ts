@@ -14,10 +14,9 @@ import {
 	type WatchEnd,
 } from "../../watch.ts";
 import type { Principal } from "../data/index.ts";
-import type { SealToken } from "../documents/internal.ts";
 import { NativeSource, Source } from "../state/internal.ts";
 import { nextDelay } from "./backoff.ts";
-import { type Caller, type Ctx, RoutineContext } from "./ctx.ts";
+import { CallContext, type Caller, type Ctx } from "./ctx.ts";
 import type { AnyHost, Position } from "./host.ts";
 import { resolveWatchable } from "./reference.ts";
 import { sleep } from "./sleep.ts";
@@ -31,8 +30,6 @@ export type RoutineOwner = {
 	readonly host: AnyHost;
 	readonly caller: Caller;
 	readonly context: Context;
-	/** The token its calls' transactions carry (a swap's handover fences it, slice 7b §5). */
-	readonly fence: SealToken;
 	/**
 	 * Adds a running call to the drain; `cleanup` (its bookkeeping) runs once, when it settles or when the attempt ends
 	 * with it still running.
@@ -163,7 +160,7 @@ async function live(owner: RoutineOwner, { at, fn }: Extract<Declaration, { kind
  * never rejects.
  */
 function call(owner: RoutineOwner, invoke: (ctx: Ctx) => void | Promise<void>): Promise<Called> {
-	const ctx = new RoutineContext(owner.context, owner.caller, owner.host, owner.fence);
+	const ctx = new CallContext(owner.context, owner.caller, owner.host);
 	const settled = Promise.withResolvers<Called>();
 	owner.admit(settled.promise, () => ctx.settle());
 	const finish = (called: Called): void => {

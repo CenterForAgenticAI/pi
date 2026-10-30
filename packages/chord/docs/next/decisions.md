@@ -2269,6 +2269,81 @@ validation and copies the v2 kernel added around Delta.
   descriptions on the wire (the `describe` message kind of R1 and the per-link description cache go away), R3 is moot,
   the coverage check across fingerprints of one version is gone.
 
+## Simplification audit (2026-10-30)
+
+The owner asked, after slice 7b's seven fix rounds, how many other mechanisms serve a rare case at a high cost. Audits
+by Opus and Sol (`/tmp/audit-{opus,sol}.md`) and this session; each item decided by the owner with its code and case.
+
+- **A1, `installing` is cut (owner, 2026-10-30: "cut"):** model §1's state for a hold or request that does not fit the
+  running code while a reload stages: staging is synchronous (`stagePlugins`, `recordFactory`), so no message or caller
+  can arrive while it runs (the only test reached it from a factory calling back into the host). The `Serving` kind, the
+  host's map, `Hold.start`'s branch and the test go. During the app's bundling before `host.reload` the old code
+  answers a mismatch `failed { waiting }` until the commit wakes the request (model §5's accepted gap). Supersedes
+  model §1's `installing` row and design §21's installing sentences.
+
+- **A2, static registry cycle edges are cut (owner, 2026-10-30: "yeah cut"):** the edges a contribution of another
+  registry's value recorded (`RegistryEdge`, `#reads` counts, `assertNoCycle`, `#reaches`, an attempt's pending edges,
+  staging's edges) go; the runtime guard stays (a registry read while it composes throws `invalid/cycle`; the
+  contribution that read it is left out and reported `contribution_failed`). A ring of registries is caught at its first
+  composition instead of at `self.contribute`: the contributing object goes live, the rest of the registry works.
+  Supersedes slice 8's "a cycle of registries reading each other refused when the second one serves or contributes".
+
+- **A3, routine calls keep their ops (owner, 2026-10-30: "keep"):** `self.on` handlers keep `{ value, ops, retired }`
+  with the routine's own folding (`PendingOps`, the basis after a throw).
+
+- **A4, cross-host activation chains stay (owner, 2026-10-30: "yep keep"):** they catch the common, sequential form of a
+  cross-host dependency ring (one request whose activation creates the other side) with an immediate `invalid/cycle`
+  naming the path; `parked_long` stays the slow net for the rare simultaneous race.
+
+- **A5, retry propagation by a hop budget (owner, 2026-10-30: "b if correct"):** `ref.retry()` still passes on from a
+  parked object to its failed dependencies (model §3.7), but its dedupe is simpler: on one host one retry's walk keeps a
+  visited set (a diamond retries a shared dependency once); across links the `retry` message carries a hop budget (an
+  integer, 16 from the first host, one less per host, dropped at 0) instead of the operation id (uuidv7), the objects'
+  last-8 remembered ids and the `through` list. Bounded effects, both harmless: a diamond across hosts may send a shared
+  dependency two retries (the second meets it activating and is ignored, or starts one more attempt if the first
+  already failed); a waiting ring across hosts (the undetected simultaneous cycle) passes the retry round until the budget
+  runs out, starting no attempt (parked objects only pass it on). Instance ids stay (activation chains, A4).
+
+- **A6, staging factories against a recording `self` stay (owner, 2026-10-30: "keep"):** a throwing new factory keeps
+  rejecting the whole reload (the host stays on its old code), and each object's fate is decided from its recorded
+  declarations before the commit.
+
+- **A7, registry last-good with provenance stays (owner, 2026-10-30: "a").**
+
+- **A8, deferred job-state persistence keeps its held ops (owner, 2026-10-30: "keep").**
+
+- **A9, a pure swap sends holds a fresh `bound` (owner, 2026-10-30: "simplify"):** a hold over a link whose object
+  swaps in place gets a fresh `bound` (one snapshot of its members), the path a restart, a variant change and a version
+  change already take, instead of a re-subscription with `[["r", value]]` per changed member (`Hold.#rebound`, its
+  constant-to-source and failed-member cases, `currentOf`). A tab's watchers may get one frame for an unchanged member;
+  nothing is lost or stale. Supersedes design §21/§22's per-member `r` rule for holds after a swap.
+
+- **A10, one rule after a live failure (owner, 2026-10-30: "simplify"):** every member of a failed live instance keeps
+  being followed (references and holds) until the commits it admitted published (`documents.settled()`), then all stop:
+  the restarts' rule. The "own" against "foreign" split (`#follows === "own"`, `Attempt.owns` and its mapping-derive
+  case, `Hold.#stopForeign`) goes; a re-exposed member of another object may show one more change in that window.
+  Refines 6a's build-review rule "members following another object's sources freeze at once".
+
+- **A11, `parked_long` widened (owner, 2026-10-30: "widen"):** reported once per parking episode when an attempt has been
+  parked longer than its `readyTimeout`, whatever its blocker (the first in declaration order named, with its state);
+  the remote-loading condition, `heldOnLink` and the clock restart at a link go. Also covers a cross-host ring one of
+  whose members waits on a failed dependency. Supersedes decision 6's narrow condition.
+- **A12, the routine fence token folds into the seal (owner, 2026-10-30: "fold"):** one seal token per attempt; after a
+  swap the old routine calls get `closeTimeout` to finish, then the whole old attempt is sealed (its method calls had
+  the same bound). `RoutineContext.fence` and the token choice per transaction go. Supersedes slice 7b decision 4's
+  separate token.
+- **A13, the table version fence stays (owner, 2026-10-30: "keep"):** an old call stuck past a restart's drain never
+  issues SQL against a migrated table (which would stop the store and close the host).
+- **A14, key pins keep their hand-over between instances (owner, 2026-10-30: "keep").**
+
+- **A15, keyed members across objects stay, with their versioning (owner, 2026-10-30: "keep essential"):** they fill
+  the gap P3 creates (a view with params following one entry of a persisted store live); the alternatives (a singleton
+  map, a method) are weaker.
+
+Summary: cut A1 (`installing`), A2 (static registry cycle edges); simplified A5 (retry hop budget), A9 (a fresh `bound`
+after a swap), A10 (one rule after a live failure), A11 (`parked_long` widened), A12 (one seal token); kept A3, A4, A6,
+A7, A8, A13, A14, A15.
+
 ## Portability boundaries in the kernel
 
 From `research/chord-on-durable-objects.md`, adopted for the Chord v2 kernel because they cost little and help tests:

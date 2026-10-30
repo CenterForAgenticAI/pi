@@ -12,8 +12,8 @@ export {
 	type Binding,
 	type CheckedParams,
 	type Followed,
-	type RetryOperation,
-	retryOperation,
+	type RetryWalk,
+	retryWalk,
 	type Target,
 } from "./reference.ts";
 export type { UnboundRequest } from "./unbound.ts";

@@ -850,3 +850,33 @@ The small call, measured apart (ten bursts of 1,000 after 3,000 warm-up calls, t
 29.5-30.6 → 27.6-27.9 µs and text 25.1-25.9 → 27.5-28.3 µs; with the young generation pinned, binary 29.7-30.7 →
 30.3-30.7 µs and text 23.6-23.7 → 23.9-24.1 µs. The stock text gap is the young generation's sizing, as for commit to
 frame above (pinned, the two match); the snapshot before the final review's fixes measures the same.
+
+## Simplification audit (2026-10-30)
+
+HEAD `4b535d57e` → the audit build (A1, A2, A5, A9-A12), copies at paths of equal length, CPU 6, alternating.
+`calls.ts`, three runs: local call 2.70-2.73 → 2.69-2.73 µs (6,660 B both), watched derive commit 10.41-10.75 →
+10.42-10.74 µs (14,899 B both), activation churn 59.0-60.9 → 59.1-61.4 µs (41,473-41,482 → 41,478 B). Retained per live
+object with one dependency (10,000 kept) 6,745-6,754 → 6,745-6,752 B; a first cut of the declaration-ordered
+dependency list (A11) kept it on live attempts, +225 B, and is now let go after the dependency check. `links.ts` with
+the young generation pinned: commit to frame, hold to live and retained per hold equal within run spread (176.4 →
+176.2-176.6 KiB per hold).
+
+**Text-codec calls in isolation** (Sol's probe: a remote object over one memory link, 5,000 warm-up calls, ten bursts
+of 1,000 small calls, then 200 warm-up and 30 bursts of 10 calls with a 1 MiB argument; binary first, then text; the
+heap collected before each burst and the collections in it recorded: none in any burst), seven alternating pairs,
+median of the pairs' medians:
+
+| Case | stock | young generation pinned |
+| --- | --- | --- |
+| binary small | 26.53 → 26.37 µs | 25.72 → 25.90 µs |
+| text small | 19.31 → 20.95 µs (+8.5%) | 19.11 → 19.93 µs (+4.3%) |
+| binary 1 MiB | 985 → 993 µs | 539 → 412 µs (bimodal: 187-607 µs per run) |
+| text 1 MiB | 958 → 963 µs | 273 → 284 µs (221-352 µs per run) |
+
+Heap per call is the same (text small 15,171 → 15,160-15,202 B). The text small gap is not per-call work: the codec
+alone (encode, decode and the message check of a call and a result message, 20,000 per burst) measures the same in both
+trees (text call 1.55 µs and 52 B, result 1.52 µs and 171 B), deoptimizations and inlining decisions are the same, and
+the gap follows the shape of the text decoder's `fromFields`, not what runs: the build with HEAD's `text.ts` matches HEAD
+(19.0-19.2 µs), the one change in it that matters is the never-executed `T` (retry) case, and writing that case with an
+object spread again (`...(f.length >= 2 ? { hops } : …)`) restores HEAD's 19.1 µs while other edits of the same size do
+not. With text measured first the gap is 22.4-22.5 → 23.0-23.3 µs (+2-3%). V8 code generation, recorded as noise.

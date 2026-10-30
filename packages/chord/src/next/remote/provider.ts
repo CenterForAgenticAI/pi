@@ -350,10 +350,10 @@ export class ProviderSide {
 	 * A call: one on a hold this side does not know is ignored (Q1), more than this side's N at once and compressed
 	 * arguments from a child (clients never compress) are protocol errors. On a relayed hold it is forwarded, its
 	 * arguments checked against this link's part limit first (the bytes are here). On a served hold that is not bound
-	 * yet it is refused `not_ready`; its method is an index into the bound variant (one outside it is a protocol error)
-	 * and its arguments are opened and parsed here within the hold's limits (past one the call fails `too_large/part`; a
-	 * malformed part is a protocol error), absent ones `null`. Arguments this host must inflate asynchronously are
-	 * inflated first, then the call is handled again.
+	 * yet (nor binding afresh after a swap) it is refused `not_ready`; its method is an index into the bound variant (one
+	 * outside it is a protocol error) and its arguments are opened and parsed here within the hold's limits (past one
+	 * the call fails `too_large/part`; a malformed part is a protocol error), absent ones `null`. Arguments this host
+	 * must inflate asynchronously are inflated first, then the call is handled again.
 	 */
 	#call(message: Extract<Message, { readonly kind: "call" }>): void | Promise<void> {
 		if (this.#calls.has(message.call)) throw new Error(`call ${message.call}: the id is in use`);
@@ -374,7 +374,7 @@ export class ProviderSide {
 			hold.call(message);
 			return;
 		}
-		if (!hold.bound) {
+		if (!hold.callable) {
 			this.#refuse(message.call, new ChordError({ code: "not_ready", message: `hold ${hold.id}: not bound yet` }));
 			return;
 		}

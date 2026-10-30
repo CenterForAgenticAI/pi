@@ -185,8 +185,7 @@ server.accept(webSocketLink(ws), { principal, limits: { part: 16 * MiB, decoded:
   way. A dependency failing with `invalid/cycle` makes its dependent broken with that error (it would wait on a ring
   that never heals). The gap (owner, 2026-10-29: no probe): a chain is fixed when its object is created, so a ring
   across hosts whose objects start at the same moment is not detected, and without a dependency deadline it stays
-  parked; an attempt parked longer than its `readyTimeout` on a remote attempt that is only `loading` (its hold on a
-  link: the clock and `since` run only while it is, so a late link is not reported at once) is reported once per
+  parked; an attempt parked longer than its `readyTimeout`, whatever its blocker (audit A11), is reported once per
   parking episode (`parked_long`), nothing fails. A cycle is a plugin bug: see the authoring rules below.
 - `onError(error: HostError)` gets everything that fails in the background, by `kind` (`failure` where the value is a
   `FailureCause`, `error` otherwise; a position is `{ kind: "on" | "onLive" | "native", position }`, from 1):
@@ -201,8 +200,9 @@ server.accept(webSocketLink(ws), { principal, limits: { part: 16 * MiB, decoded:
   `error`: a routine call threw, or its watch could not be taken; a source's failure calls never reach a routine), `job_failed` (`object`, `job`,
   `id`, `error`: a run threw, not after an abort), `job_finish_failed` (the same: a `finish` threw; it is retried) and
   `job_dropped` (`object`, `job`, `id`: a blocked run dropped without `finish`, by `abort` or its object's end),
-  `parked_long` (`object`, `waitingFor`: the remote blocker's label, `since`: when it parked; once per parking episode,
-  slice 7a), and
+  `parked_long` (`object`, `waitingFor`: the first blocker's label in declaration order, a reference's or `registry
+  <name>`, `state`: `loading` or `failed`, `since`: when it parked; once per parking episode, its pinned keys' loading
+  included, slice 7a, audit A11), and
   the registries' (slice 8, each once per episode) `registry_conflict` (`registry`, `message`, `plugins`: a conflict
   `compose` resolved), `registry_failed` (`registry`, `error`: `compose` or an older version's `value` adapter threw),
   `contribution_failed` (`registry`, `plugin`, `type?`, `error`: a watchable contribution failed or ended, or its
@@ -214,9 +214,10 @@ server.accept(webSocketLink(ws), { principal, limits: { part: 16 * MiB, decoded:
   empty params: `StoreSelf.contribute`; any other factory throws, R21) from `live` until it fails, ends or restarts,
   entering before anyone sees it live and leaving at its seal. One value per registry each; a Chord watchable (a
   source, a constant, a document handle, a reference member, a writable, a registry value) is followed through the
-  batch, anything else is a plain value whatever methods it has (registries carry natives); a registry value closing
-  a cycle of registries (through the tables and the factory's own earlier contributions) is refused `invalid/cycle`
-  at `contribute` (an edge lives as long as its contribution is in a table). Every served registry composes once at the end of `load`'s setups, before any object activates.
+  batch, anything else is a plain value whatever methods it has (registries carry natives); a ring of registries
+  reading each other is caught when one composes (audit A2): the registry read while it composes throws
+  `invalid/cycle`, the contribution that read it is left out and reported `contribution_failed`, the rest works. Every
+  served registry composes once at the end of `load`'s setups, before any object activates.
   `self.registry(R)` is a declared dependency: without a usable value at its version (no provider:
   `unavailable/undeclared`; a first `compose` or the version mapping that threw; a version the provider does not serve:
   `contract_mismatch`) the attempt parks `failed { waiting }` naming the registry, and every change of whether the value
@@ -413,13 +414,16 @@ server.accept(webSocketLink(ws), { principal, limits: { part: 16 * MiB, decoded:
   own document or derive. When the reference's target changes (a new instance after a reload, retry or restart; a new
   object after removal and re-serving; another variant) it moves them there and sends one frame (a diff from the last
   value, whole after a failure). While it points at nothing it keeps its last values: no call while loading, one
-  `failed` call while failed; a member the new variant lacks fails `invalid/member`. The keys a reference holds on a
-  keyed member (`at(key)`, `watch(key)`) are its own (`reference-keys.ts`): pinned again on each new live instance,
-  their last value kept until that pin loads; a dependent's factory pin loads before the dependent goes live. Older
-  consumers read through the instance's shared mapping for their version (`adapted.ts`).
+  `failed` call while failed; a member the new variant lacks fails `invalid/member`. A failed live instance's members
+  (its own and re-exposed ones) are followed until the commits it admitted published, then all hold (audit A10), as a
+  restart's drained instance's. The keys a reference holds on a keyed member (`at(key)`, `watch(key)`) are its own
+  (`reference-keys.ts`): they follow the instance they are pinned on as long as the object does (members' rule), are
+  pinned again on each new live instance, their last value kept until that pin loads; a dependent's factory pin loads
+  before the dependent goes live. Older consumers read through the instance's shared mapping for their version
+  (`adapted.ts`).
 - `ref.retry()`: a failed object (broken too) gets an attempt now, its backoff window skipped; every reference to it
   goes `loading`. One parked `failed { waiting }` passes it on (above). Ignored while an attempt runs otherwise, once
-  live and once released; over a link it is a `retry` message carrying its operation.
+  live and once released; over a link it is a `retry` message carrying its hop budget (`hops`).
 
 Rules:
 
@@ -447,10 +451,10 @@ Rules:
   deadline paused); the factory never runs again; every change of a dependency (its state, a new cause by value, its
   first outcome) makes it check again once after the batch that made it; once all are live it goes on to its own
   steps, and a dependency leaving `live` after that changes nothing. `ref.retry()` on a parked `failed { waiting }`
-  object passes on to its failed dependencies once per retry operation (a uuidv7 that travels in the `retry`
-  message with the instance ids of the objects it passed through: one already in that list drops it, so a ring across
-  hosts stops after one lap whatever the number of concurrent retries, and the last few ids an object handled
-  shortcut a diamond: a `broken` or
+  object passes on to its failed dependencies (audit A5): on one host one retry's walk keeps a visited set (a diamond
+  retries a shared dependency once); across links the `retry` message carries a hop budget (`hops`: 16 from the first
+  host, one less per host, never sent at 0), so a waiting ring across hosts passes it round until the budget runs out,
+  starting no attempt, and a diamond across hosts may retry a shared dependency twice (harmless): a `broken` or
   `transient` one starts an attempt, a parked one passes it on, a request waiting in an index is left alone, a
   refused hold over a link re-runs its start); a `retryOn` wake does nothing while parked. A parked object whose last reference goes ends at once.
 - **Authoring rules against cycles** (dependency model §7; a cycle is a plugin bug, and a ring across hosts started at
@@ -536,7 +540,8 @@ their number; `published`, `index`/`unindex` (the unbound index), `closing`, `li
 `ChordObject` (`state`, `retry`) and `Holder` (what holds an object: a binding, or a hold over a link: `moved()` when
 the object's `state` changed, which a new holder also reads itself; `end(error)`), `Binding` (`moved`, `end`),
 `CheckedParams`, `Caller` (principal and incarnation of a reference's maker or a hold's origin), `RefState` with `LOADING`, `LIVE`,
-`RetryOperation` (one `ref.retry()` passing on), `Serving` (what a hold placed here binds to, or why it waits) and
+`RetryWalk` and `retryWalk` (one retry's walk on this host, with its hop budget), `Serving` (what a hold placed here
+binds to, or why it waits) and
 `UnboundRequest` (what the unbound index holds). Also on `ChordHost` for `remote/`: `revoke` (a parent's `revoke` message), `compression`, `count(kind,
 delta)` (the keep-alive counts), `cycle(chain, id, closing)` (the `invalid/cycle` error naming a chain by labels),
 `unplaced` (the path of remote references failed for a part past the limits) and `pathOf(Type, params, principal)`

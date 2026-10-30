@@ -15,6 +15,7 @@ import {
 	expectCollected,
 	failLive,
 	flushed,
+	holdNextCommit,
 	instancesOf,
 	loaded,
 	memoryStore,
@@ -102,6 +103,8 @@ describe("re-binding when a new attempt goes live", () => {
 				?.pins;
 		expect(pins("a")).toBe(1);
 		fail();
+		// Its keys follow the failed instance until its admitted commits published (audit A10), then show the failure.
+		await delivered();
 		which = "b";
 		exposer.retry();
 		(await host.get(Exposer, {}, context)).release();
@@ -558,5 +561,144 @@ describe("a released key leaves its document (final review)", () => {
 		await kept.stop();
 		keeper.release();
 		await host.close(context);
+	});
+});
+
+describe("keys across a restart and a failed re-pin (Astra's coverage note)", () => {
+	const Keys = local("app.keys", { version: 1, params: {}, members: { notes: keyed(Schema) } });
+
+	/** Serves `Keys` over the persisted `Stored` (its handle kept in `handles`), with a native opened by `open`. */
+	const serveKeys = (handles: KeyedHandle<N>[], open: () => Promise<void>) =>
+		defineFacet((h) =>
+			h.serve(Keys, (_, self) => {
+				self.open(open, () => {});
+				const notes = self.state(Stored);
+				handles.push(notes);
+				return { notes };
+			}),
+		);
+
+	it("a commit admitted to a watched key, landing after a restart's drain, is in the key's last value", async () => {
+		const store = await memoryStore();
+		const handles: KeyedHandle<N>[] = [];
+		const host = createHost({ store, onError: () => {} });
+		await host.load([{ name: "@test/app", facet: serveKeys(handles, async () => {}) }], context);
+		const keys = await host.get(Keys, {}, context);
+		const change = (n: number) =>
+			handles.at(-1)!.change(
+				"k",
+				(draft) => {
+					draft.n = n;
+				},
+				context,
+			);
+		await change(1);
+		const watch = (await keys.notes.watch("k", context))!;
+		const calls = changesOf(watch);
+		const held = holdNextCommit(store);
+		const admitted = change(5);
+		await held.entered;
+		// The new code's native stays opening: the new instance is not live while the key holds its last value.
+		const opening = Promise.withResolvers<void>();
+		const reloading = host.reload([{ name: "@test/app", facet: serveKeys(handles, () => opening.promise) }], context);
+		await delivered();
+		held.release();
+		await admitted;
+		await reloading;
+		await delivered();
+		expect([watch.value, valuesOf(calls)]).toEqual([{ n: 5 }, [{ n: 5 }]]);
+		opening.resolve();
+		await vi.waitFor(() => expect(keys.state.value).toEqual({ kind: "live" }));
+		expect(watch.value).toEqual({ n: 5 });
+		await host.close(context);
+		await store.close(context);
+	});
+
+	it("a key's re-pin on a new instance that fails to load keeps its last value, one failed call; the next pin heals it", async () => {
+		const store = await memoryStore();
+		const seeded: KeyedHandle<N>[] = [];
+		const seed = createHost({ store, onError: () => {} });
+		await seed.load([{ name: "@test/app", facet: serveKeys(seeded, async () => {}) }], context);
+		await seed.get(Keys, {}, context);
+		await seeded[0]!.change(
+			"k",
+			(draft) => {
+				draft.n = 1;
+			},
+			context,
+		);
+		await seed.close(context);
+		// A new host: `Keys`' key is in the store only; the exposer re-exposes provider `b` (in memory) first.
+		const handles: KeyedHandle<N>[] = [];
+		let b: KeyedHandle<N> | undefined;
+		const providers = defineFacet((h) => {
+			h.serve(Keys, (_, self) => {
+				const notes = self.state(Stored);
+				handles.push(notes);
+				return { notes };
+			});
+			h.serve(Provider, (_, self) => {
+				b = self.state(Notes);
+				return { notes: b };
+			});
+		});
+		const exposing = (which: "keys" | "b") =>
+			defineFacet((h) =>
+				h.serve(Exposer, (_, self) => {
+					self.state(Own);
+					const notes = which === "keys" ? self.get(Keys, {}).notes : self.get(Provider, { id: "b" }).notes;
+					return { notes };
+				}),
+			);
+		const host = createHost({ store, onError: () => {} });
+		await host.load(
+			[
+				{ name: "@test/providers", facet: providers },
+				{ name: "@test/exposer", facet: exposing("b") },
+			],
+			context,
+		);
+		await host.get(Provider, { id: "b" }, context);
+		await b!.change(
+			"k",
+			(draft) => {
+				draft.n = 2;
+			},
+			context,
+		);
+		const exposer = await host.get(Exposer, {}, context);
+		const watch = (await exposer.notes.watch("k", context))!;
+		const calls = changesOf(watch);
+		// The cold provider's next read of the key fails once.
+		const persistence = (handles[0] as unknown as { slot: { persistence: { read(...args: unknown[]): unknown } } })
+			.slot.persistence;
+		const read = persistence.read.bind(persistence);
+		persistence.read = async () => {
+			persistence.read = read;
+			throw new Error("disk");
+		};
+		// A swap in place: the new instance re-exposes the cold provider's notes; the key's pin there fails to load.
+		await host.reload(
+			[
+				{ name: "@test/providers", facet: providers },
+				{ name: "@test/exposer", facet: exposing("keys") },
+			],
+			context,
+		);
+		await flushed();
+		expect(exposer.state.value).toEqual({ kind: "live" });
+		expect([watch.value, valuesOf(calls)]).toEqual([{ n: 2 }, [{ failed: expect.stringContaining("disk") }]]);
+		// The next instance pins it again, loaded this time: one frame heals it.
+		await host.reload(
+			[
+				{ name: "@test/providers", facet: providers },
+				{ name: "@test/exposer", facet: exposing("keys") },
+			],
+			context,
+		);
+		await vi.waitFor(() => expect(watch.value).toEqual({ n: 1 }));
+		expect(valuesOf(calls)).toEqual([{ failed: expect.stringContaining("disk") }, { n: 1 }]);
+		await host.close(context);
+		await store.close(context);
 	});
 });

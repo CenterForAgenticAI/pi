@@ -250,7 +250,7 @@ and closed by the app with `store.close(ctx)` after `host.close`; the host never
 background, as a tagged `HostError`: `listener_error` (a watch listener threw), `delivery_failed` (a frame delivery
 threw), `activation_failed { object, failure }`, `close_failed { object, native, error }`, `close_timeout { object,
 native }`, `drain_timeout { object }`, `protocol_error { error }`, `resolve_failed { address, error }`; later routine
-errors (slice 5), `derive_failed { object, member?, error }` (a derive's compute threw, once per failure episode, slice 6a), the registries' `registry_conflict { registry, message, plugins }`, `registry_failed { registry, error }`, `contribution_failed { registry, plugin, type?, error }` and `contribution_refused { registry, plugin, type?, version }` (each once per episode, slice 8), `object_failed { object, failure }` (a live object failing, slice 6a, `broken`; `transient` when a `self.follow` source failed, slice 6b R4; `failure` where the value is a `FailureCause`, `error` otherwise, 2026-10-27), `job_interrupted { object, job, id, restarts }` (a persisted run ended at the restart limit, slice 6b D6), `parked_long { object, waitingFor, since }` (an attempt parked longer than its `readyTimeout` on a remote attempt that is only `loading`, once per parking episode: a diagnostic of a ring across hosts started at the same moment, slice 7a, §6) and `storage_failed { error }`
+errors (slice 5), `derive_failed { object, member?, error }` (a derive's compute threw, once per failure episode, slice 6a), the registries' `registry_conflict { registry, message, plugins }`, `registry_failed { registry, error }`, `contribution_failed { registry, plugin, type?, error }` and `contribution_refused { registry, plugin, type?, version }` (each once per episode, slice 8), `object_failed { object, failure }` (a live object failing, slice 6a, `broken`; `transient` when a `self.follow` source failed, slice 6b R4; `failure` where the value is a `FailureCause`, `error` otherwise, 2026-10-27), `job_interrupted { object, job, id, restarts }` (a persisted run ended at the restart limit, slice 6b D6), `parked_long { object, waitingFor, state, since }` (an attempt parked longer than its `readyTimeout`, whatever its blocker, once per parking episode: a diagnostic of a ring across hosts started at the same moment or a long wait, slice 7a, audit A11, §6) and `storage_failed { error }`
 (slice 6a), which every app must handle: Chord never ends the process,
 the app exits with its own code for its supervisor or reopens.
 
@@ -639,8 +639,9 @@ host.serve(Notes, ({ session }, principal, self) =>
 - **A live object can fail** (owner, 2026-10-26): a runtime failure of the owner (a `migrate` failing on access, a
   stored version newer than the code) seals the live attempt and makes the object `failed` (`broken`): calls reject
   with the cause, state members keep their last values, natives close, documents stay on the object; recovery by
-  reload or `ref.retry()`; live dependents stay live. The members freeze only after the commits admitted before the
-  seal adopted and published once, and a retry's factory waits for that (2026-10-27, slice 6a build reviews).
+  reload or `ref.retry()`; live dependents stay live. Its references keep following every member (its own and
+  re-exposed ones) until the commits admitted before the seal adopted and published once, then take their last values
+  (audit A10, 2026-10-30: one rule, as restarts), and a retry's factory waits for that.
 - **Parked on its dependencies** (dependency model §3, slice 7a; supersedes R18's dependency deadline and backoff): a
   dependency is what an attempt declares and needs before it goes live: `self.get` (local or remote), `self.registry`,
   keyed pins (`at(key)` on another object's keyed member); `self.follow` is the attempt's own step, not a dependency.
@@ -653,7 +654,7 @@ host.serve(Notes, ({ session }, principal, self) =>
   | one failed with `invalid/cycle` (a dependent off the ring) or `forbidden` (an `authorize` that refused it: authority, M§3.6) | `broken` with that error: nothing heals it but `ref.retry()` or a reload |
   | one `ended` (revoked, its host closed) | `broken` with that error: the request cannot come back |
 
-  **No timer runs while parked:** no dependency deadline, no backoff; the attempt's `readyTimeout` deadline is paused
+  **Nothing times out while parked:** no dependency deadline, no backoff (only `parked_long`'s diagnostic report, below); the attempt's `readyTimeout` deadline is paused
   (as eager migrations pause it) and resumes with the budget left; the identity backoff stays for the object's own
   `transient` failures only. **Wakes:** the parked attempt checks again at every change of a dependency (live,
   loading, failed, a new cause compared by value, ended, and its first outcome, below), coalesced per object after the
@@ -662,10 +663,10 @@ host.serve(Notes, ({ session }, principal, self) =>
   check is the boundary:** once all are live (and the pinned keys loaded), the own steps run; a dependency that leaves
   `live` afterwards changes nothing (R18 after live: the object goes live; its calls through that reference meet its
   state). **Retry passes on:** `ref.retry()` (or a `retry` message) on an object parked `failed { waiting }` passes on
-  to its failed dependencies, once per retry operation: the operation (a uuidv7) travels in the `retry` message
-  (`operation`) with the instance ids of the objects it passed through (`through`, added hop by hop, at most 32), and
-  an object already in `through` drops it, so a ring across hosts stops after one lap however many retries run at
-  once; an object also remembers the last few ids it handled, so a diamond retries it once. A `broken` or
+  to its failed dependencies (audit A5, 2026-10-30): on one host one retry's walk keeps a visited set, so a diamond
+  retries a shared dependency once; across links the `retry` message carries a hop budget (`hops`, 16 from the first
+  host, one less per host, dropped at 0), so a waiting ring across hosts passes it round until the budget runs out
+  (starting no attempt) and a diamond across hosts may retry a shared dependency twice (harmless). A `broken` or
   `transient` one starts an attempt, a parked one passes it on, a request waiting unbound in an index is left as it is
   (an event wakes it), a refused hold over a link re-runs its start. A `retryOn` wake while parked does nothing. When
   a parked object's last reference goes, it ends at once (it is not live: no `linger`) and releases its requests.
@@ -688,10 +689,8 @@ host.serve(Notes, ({ session }, principal, self) =>
   object is created, so a cycle entering an object already activating is not detected. Example: A on the server and B
   on a worker start at the same moment, A declares B and B declares A; the holds carry `[A]` and `[B]`, neither finds
   the other, and without a dependency deadline both stay parked. It is made visible: an attempt parked longer than its
-  `readyTimeout` on a remote attempt that is itself only `loading` (its hold on a link; the clock and `since` start
-  when the hold gets on a link and stop while the path has no link)
-  is reported once per parking episode as
-  `parked_long { object, waitingFor, since }`; nothing fails or retries. A cycle is a plugin bug; **the guide's four
+  `readyTimeout`, whatever its blocker (audit A11, 2026-10-30), is reported once per parking episode as
+  `parked_long { object, waitingFor, state, since }` (`waitingFor` the blocker's label, `state` `loading` or `failed`); nothing fails or retries. A cycle is a plugin bug; **the guide's four
   rules** for plugin authors and agents (host README): (1) a factory declares only what the object needs, never a type
   that needs it back; (2) back-references and occasional lookups go into methods and routines (`ctx.get`); (3) data
   flows up through state and registries, not mutual `self.get`; (4) host-lifetime objects on the server never declare
@@ -816,8 +815,7 @@ location are dropped.
   last values readable while its hold is failed. Nothing outlives its object instance and nothing is handed between
   objects.
 - **References across a reload** (slice 7b §6): a reference is never ended by a code change. Its object swapped in
-  place or restarted: it follows the new instance (above; a hold over a link is re-subscribed or gets a fresh `bound`,
-  §22). Its version no longer accepted, or a member of it refused (`contract_mismatch`): it leaves the object and waits
+  place or restarted: it follows the new instance (above; a hold over a link gets a fresh `bound`, §22). Its version no longer accepted, or a member of it refused (`contract_mismatch`): it leaves the object and waits
   unbound (`failed { waiting }`) with its last values; the object and its other holders stay. Its type removed: it
   waits unbound `not_served` with its last values; a publication that serves the name again binds it to the next
   object (a new object: its in-memory documents start over from `initial()`, persisted ones load again). On a removal
@@ -845,13 +843,12 @@ location are dropped.
 | --- | --- | --- |
 | link drop | park until reconnect | readable (`loading`) |
 | object loading or restarting | park until live | readable (`loading`) |
-| rollout: the provider host installing a revision the hold does not fit (slice 7b) | park until installed, bounded | readable (`loading`) |
 | unbound (not served, another version) or parked on a failed dependency | reject at once with the cause | `failed { waiting }` (slice 7a) |
 | object `failed` | reject at once with the cause | `failed` with cause and `retryAt` |
 
 - A failed reference stays alive: while held, Chord retries a `transient` failure per the backoff and wakes a
   `waiting` one at the event it waits for; `ref.retry()` tries at once (a Retry button; over a link the `retry
-  { hold }` message, which also re-runs a refused hold's start: the host address, binding; design audit 2026-10-27;
+  { hold, hops }` message, which also re-runs a refused hold's start: the host address, binding; design audit 2026-10-27;
   on a parked object it passes on to the failed dependencies, §6); success goes `loading`, then `live`. A provider
   tells a pending hold's consumer each failure (`failed`, with the rest of its backoff window for a transient one),
   each new cause of an object parked on a failed dependency, and the next attempt (`loading`).
@@ -1405,8 +1402,8 @@ self.onLive(async (ctx) => {                                    // set up, wait 
   have finished (bounded; a stuck call is reported and the new routines start anyway): a handover per object, so
   routines need no names. Example it prevents: an old handler midway through `restart(W1)` and a new one seeing W1
   still pending and restarting it again. The bound is `closeTimeout` (owner, 2026-10-24); calls do not wait for the
-  handover, only the new routines do (slice 7b). The old routine calls' transactions carry one token, sealed when
-  the new routines start, so a stuck old call past the handover is fenced on its own (`drain_timeout` reported).
+  handover, only the new routines do (slice 7b). A stuck old call past the handover is reported `drain_timeout` and
+  the whole old attempt is sealed then (audit A12: one seal token per attempt; its method calls had the same bound).
 - **`on(source, fn)`:** any watchable (a document, a derive, a reference member, a registry value, `ref.state`). The
   first call gets the current value (`[["r", value]]`, W2b), then one call per change; calls never overlap (S8);
   changes made during a call arrive folded in the next (newest value, folded ops); a running call is not aborted by a
@@ -1692,6 +1689,9 @@ const router = self.registry(Http);           // a declared dependency; read rou
   Tools, sections, hooks, wraps and tasks reach the harness as one Durable `Extension` per plugin contributed to
   p3's core registry; `compose` builds Durable's registry snapshot (Durable applies selection and wraps, and pins a
   snapshot per task phase). Skills and other lists work the same way.
+- **A contribution may be another registry's value** (it is followed: its change recomposes). A ring of registries
+  reading each other is caught when one composes (audit A2): a registry read while it composes throws `invalid/cycle`,
+  the contribution that read it is left out and reported `contribution_failed`, the rest of the registry works.
 - **Removing a contribution:** there is no remove call (`contribute` is declarative, in the factory). An entry leaves
   the table when its contributor ends, or after a reload whose new code no longer contributes. A live contributor that
   has nothing to offer for now sets its readable to the registry's empty value (an extension without tools, empty
@@ -1844,16 +1844,15 @@ type ReloadReport = {
   the documents, tables and jobs it declares with their versions, its contributions and requests, runs the checks an
   attempt makes without effects (declared twice; persisted data outside a stable identity; contributions outside a
   host-lifetime object; a document or job at an older version, or at its version with another schema), and hands out
-  inert handles. Staging is synchronous. **Installing** (model §1): while it stages, a request or arriving hold that
-  the running code does not serve waits `installing` (`loading`) and is evaluated again when the reload ends, by its
-  commit or its rejection.
+  inert handles. Staging is synchronous, so no request or arriving hold meets it half done (audit A1: model §1's
+  `installing` is cut).
 - **The commit** (one batch): the served types become the staged ones (an unchanged plugin's entries stay as they
   are); a removed plugin's registry provider goes (its readers wait `not_served`), a reloaded one's replaces the old
   (`RegistryRecord.serve` replaces), the reloaded plugins' facet contributions are replaced by plugin (object
   contributions follow their objects), every changed registry composes once; a removed type's presence list goes.
   After the batch, each object takes its fate, host-lifetime objects of new types start (no barrier), and the
   publication wakes the requests indexed under the names the reload serves (`UnboundIndex.wake(names)`, per name),
-  refused holds of those names re-run their start, and the requests that waited `installing` are evaluated again.
+  refused holds of those names re-run their start.
 - **Fates** (decided in staging; objects of plugins not in the reload are untouched):
 
   | The object | Fate |
@@ -1883,7 +1882,7 @@ type ReloadReport = {
   contributions are replaced in one batch; `self.writable` starts at its new initial value (decision 2); `retryOn`
   sources are re-declared. **Routines hand over per object:** the old attempt's routines are aborted; the new ones
   start once the old routine calls finished, bounded by `closeTimeout` (a stuck one is reported `drain_timeout` and
-  fenced: the old routine calls' transactions carry one token, sealed when the new routines start); calls never wait.
+  the whole old attempt is sealed then, audit A12: one seal token per attempt); calls never wait.
 - **Natives are not kept across reloads by name:** natives have no line, transactions or schema, so old and new code
   would interleave unchecked. In practice a restart costs little (the Durable harness is base code, terminal PTYs live
   in their own process, model runtimes, sandboxes and the search index rebuild in milliseconds); reloading the plugin
@@ -1910,13 +1909,13 @@ type ReloadReport = {
 ### Rollout across hosts
 
 - **The rollout is the app's** (decision "Slice 7b's open points" (3)): it calls `host.reload` on each host in order,
-  server, then workers, then clients; Chord guarantees per host (staging, commit, `installing`, rollback). The app kit's
+  server, then workers, then clients; Chord guarantees per host (staging, commit, rollback). The app kit's
   dev component (slice 7c) is such an app. An install never waits for activations (a reverse-order rollout would
   deadlock).
-- **Each host knows only its own install** (model §5): while it stages, holds that do not fit its running code wait
-  `installing` (`loading`), evaluated again at its end; a host not installing yet answers a mismatch `failed
-  { waiting, version }` until its install commits and wakes it (a blip of at most one install). What a consumer on
-  another host sees follows §7: kept, re-subscribed or freshly bound while its version is accepted; `failed
+- **Each host knows only its own install** (model §5): until its reload commits (while the app bundles, before
+  `host.reload`), a hold that does not fit its running code is answered `failed { waiting, version }` and the commit
+  wakes it (a blip of at most one install; staging itself is synchronous, audit A1). What a consumer on
+  another host sees follows §7: kept and freshly bound while its version is accepted; `failed
   { waiting }` (`version`, `not_served`) otherwise, bound again by the install that serves it; a consumer whose own
   code moves to a new version releases its old request and makes a new one.
 - **The app's loader keeps its own duties:** the desired code set, a digest over the facet bundles' content hashes (an
@@ -1967,7 +1966,7 @@ validation, no clone of snapshots or ops.
   | `hold` | to provider | `origin?`, `hold`, `type`, `version`, `fingerprint`, `params` (part), `address`, `principal?`, `incarnation?`, `chain?` (activation chain, Q5), `limit?` (decoded size limit, 4b) |
   | `revoke` | parent to child (route link) | the revocation value (4b) |
   | `release` | to provider | `origin?`, `hold` |
-  | `retry` | to provider | `origin?`, `hold`, `operation?` (the retry it belongs to, a uuidv7), `through?` (with `operation`: the instance ids of the objects it passed through, at most 32; an object in it drops the retry, so a ring stops after one lap); relays forward both (slice 7a fix rounds 1, 2) |
+  | `retry` | to provider | `origin?`, `hold`, `hops` (the retry's hop budget, 1-16: 16 from the first host, one less for each host it passes on from, none sent at 0; audit A5); relays forward it unchanged |
   | `call` | to provider | `origin?`, `call`, `hold`, `method` (index), `args?` (part; absent: no arguments), `segments?` |
   | `abort` | to provider | `origin?`, `call` (named `cancel` until 2026-10-27) |
   | `ack` | to provider | `origin?`; one per applied `bound`/`state` message |
@@ -2060,8 +2059,8 @@ validation, no clone of snapshots or ops.
   and `state` messages already sent until their `ack` or the link's loss. A reload sends it when the object's type is
   removed (`not_served`), its version is no longer accepted (`version`), or a swap parks on a failed dependency; a
   restart or a parked swap still loading sends `loading`; both are followed by a fresh `bound` when the object is live
-  again (applied as a re-binding). A swap in place keeps the hold bound and sends one `[["r", value]]` per member whose
-  value changed (a fresh `bound` when the variant changed, or the hold's version became an older one).
+  again (applied as a re-binding). A swap in place keeps the hold bound and sends it a fresh `bound` once the new
+  instance is live (audit A9, 2026-10-30: one rebind path; a tab's watchers may get a frame for an unchanged member).
 
 ---
 

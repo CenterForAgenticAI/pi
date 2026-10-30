@@ -1,12 +1,11 @@
 // Tests of staging (slice 7b §2): a reload's setups and recorded factories; each kind of throw leaves the host on its
-// old code; recorded declarations decide an object's fate; the host is installing meanwhile.
+// old code; recorded declarations decide an object's fate.
 
 import { describe, expect, it } from "vitest";
 import { BACKGROUND_CONTEXT as context } from "../../../src/context/index.ts";
 import { int, local, method, obj, remote, str } from "../../../src/next/contracts/index.ts";
 import { defineState } from "../../../src/next/documents/index.ts";
 import { createHost, defineFacet, type FacetHost, type StoreSelf } from "../../../src/next/host/index.ts";
-import type { ChordHost } from "../../../src/next/host/internal.ts";
 import { defineJob } from "../../../src/next/jobs/index.ts";
 import { defineRegistry } from "../../../src/next/registries/index.ts";
 import { constant } from "../../../src/next/state/index.ts";
@@ -180,33 +179,6 @@ describe("staging: recorded declarations decide the fate", () => {
 		expect(await rejection(host.reload([{ name: "@test/app", facet: page(true) }], context))).toMatchObject({
 			message: expect.stringContaining("self.contribute is valid only in a local type with empty params"),
 		});
-		await host.close(context);
-	});
-});
-
-describe("staging: the host is installing (model §1)", () => {
-	it("a request for a type the running code does not serve waits loading until the reload ends", async () => {
-		const Page = local("app.page", { version: 1, params: { id: int() }, members: { id: int() } });
-		const host = createHost({ onError: () => {} }) as unknown as ChordHost;
-		await host.load([{ name: "@test/app", facet: serveStore("v1") }], context);
-		let held: ReturnType<typeof host.hold<typeof Page>> | undefined;
-		const states: string[] = [];
-		// A request made while the reload stages (from a recorded factory: staging is synchronous).
-		const facet = defineFacet((h) => {
-			h.serve(Store, () => {
-				if (held === undefined) {
-					held = host.hold(Page, { id: 1 }, context);
-					states.push(held.state.value.kind);
-				}
-				return { label: constant("v2"), bump: async () => 0 };
-			});
-			h.serve(Page, ({ id }) => ({ id: constant(id) }));
-		});
-		await host.get(Store, {}, context);
-		await host.reload([{ name: "@test/app", facet }], context);
-		await flushed();
-		expect(states).toEqual(["loading"]);
-		expect(held!.state.value).toEqual({ kind: "live" });
 		await host.close(context);
 	});
 });

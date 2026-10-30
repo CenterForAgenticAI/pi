@@ -18,10 +18,12 @@ import {
 	expectCollected,
 	failLive,
 	fakeTimers,
+	flushed,
 	forEachCodec,
 	instancesOf,
 	linked,
 	PlacedNotes,
+	partValue,
 	RawPeer,
 	rawLinked,
 	rejection,
@@ -436,7 +438,7 @@ forEachCodec(() => {
 				cause: { kind: "broken", error: { kind: "chord", error: offline } },
 			};
 			expect([await peer.next("failed"), await other.next("failed")]).toEqual([broken, broken]);
-			peer.send({ kind: "retry", hold: 0 });
+			peer.send({ kind: "retry", hold: 0, hops: 16 });
 			for (const consumer of [peer, other]) {
 				expect(await consumer.next("loading")).toEqual({ kind: "loading", hold: 0 });
 				expect((await consumer.next("bound")).holds[0]).toMatchObject({ hold: 0 });
@@ -450,7 +452,7 @@ forEachCodec(() => {
 			await peer.next("failed");
 			hold(other, 0, Flaky);
 			await other.next("failed");
-			other.send({ kind: "retry", hold: 0 });
+			other.send({ kind: "retry", hold: 0, hops: 16 });
 			for (const consumer of [peer, other]) {
 				await consumer.next("loading");
 				await consumer.next("bound");
@@ -461,8 +463,8 @@ forEachCodec(() => {
 			const { peer } = await rawLinked((h) => serveFlaky(h, { left: 0, broken: false }));
 			hold(peer, 0, Flaky);
 			await peer.next("bound");
-			peer.send({ kind: "retry", hold: 0 });
-			peer.send({ kind: "retry", hold: 9 });
+			peer.send({ kind: "retry", hold: 0, hops: 16 });
+			peer.send({ kind: "retry", hold: 9, hops: 16 });
 			await transported();
 			expect([peer.kinds(), peer.closed]).toEqual([["hello"], false]);
 		});
@@ -479,7 +481,7 @@ forEachCodec(() => {
 			expect(failed.retryIn).toBeUndefined();
 			expect(server.activity.value.references).toBe(1);
 			expect(server.references(Halves).value).toEqual([]);
-			peer.send({ kind: "retry", hold: 0 });
+			peer.send({ kind: "retry", hold: 0, hops: 16 });
 			expect(await peer.next("loading")).toEqual({ kind: "loading", hold: 0 });
 			expect(await peer.next("failed")).toMatchObject({ hold: 0, cause: { kind: "waiting" } });
 			peer.close();
@@ -519,9 +521,9 @@ forEachCodec(() => {
 			expect(await peer.next("failed")).toEqual(waiting("waiting for app.core: app.core: bug 1"));
 			// A retry passes on through the parked object to its broken dependency (one host's retry operation).
 			// (Its new attempt failed within the batch of changes the parked object checks once: no loading between.)
-			peer.send({ kind: "retry", hold: 0 });
+			peer.send({ kind: "retry", hold: 0, hops: 16 });
 			expect(await peer.next("failed")).toEqual(waiting("waiting for app.core: app.core: bug 2"));
-			peer.send({ kind: "retry", hold: 0 });
+			peer.send({ kind: "retry", hold: 0, hops: 16 });
 			await peer.next("loading");
 			expect((await peer.next("bound")).holds[0]).toMatchObject({ hold: 0 });
 		});
@@ -794,9 +796,9 @@ async function flush(): Promise<void> {
 /** A local type nobody serves. */
 const Missing = local("app.missing", { version: 1, params: {}, members: { n: int() } });
 
-describe("retry operations across links (fix rounds 1 and 2, Sol 3)", () => {
+describe("retries across links: the hop budget (audit A5)", () => {
 	it.each([1, 9, 50])(
-		"quiesce after %i concurrent Retries round a waiting ring across hosts: each stops after one lap",
+		"quiesce after %i concurrent Retries round a waiting ring across hosts: each stops at its budget, no attempt started",
 		async (operations) => {
 			type P = { kind: "server" } | { kind: "worker" };
 			const Server = hostKind("app.retry-server");
@@ -815,10 +817,12 @@ describe("retry operations across links (fix rounds 1 and 2, Sol 3)", () => {
 				hostAddress: () => Worker(),
 				variants: { reader: { state: { n: int() } } },
 			});
-			let retries = 0;
+			const hops: number[] = [];
+			let factories = 0;
 			const count = (link: Link): Link => ({
 				send: (bytes) => {
-					if (binaryCodec.decode(bytes).kind === "retry") retries++;
+					const message = binaryCodec.decode(bytes);
+					if (message.kind === "retry") hops.push(message.hops);
 					link.send(bytes);
 				},
 				onMessage: (listener) => link.onMessage(listener),
@@ -843,11 +847,14 @@ describe("retry operations across links (fix rounds 1 and 2, Sol 3)", () => {
 						{
 							name: "@test/a",
 							facet: defineFacet<P>((h) => {
-								h.serve(LocalA, (_, self) => ({ n: self.get(RemoteB, {}).n }));
-								h.serve(RemoteA, (_, _principal, self) => ({
-									variant: "reader",
-									members: { n: self.get(LocalA, {}).n },
-								}));
+								h.serve(LocalA, (_, self) => {
+									factories++;
+									return { n: self.get(RemoteB, {}).n };
+								});
+								h.serve(RemoteA, (_, _principal, self) => {
+									factories++;
+									return { variant: "reader", members: { n: self.get(LocalA, {}).n } };
+								});
 							}),
 						},
 					],
@@ -859,13 +866,14 @@ describe("retry operations across links (fix rounds 1 and 2, Sol 3)", () => {
 							name: "@test/b",
 							facet: defineFacet<P>((h) => {
 								h.serve(LocalB, (_, self) => {
+									factories++;
 									self.get(Missing, {});
 									return { n: self.get(RemoteA, {}).n };
 								});
-								h.serve(RemoteB, (_, _principal, self) => ({
-									variant: "reader",
-									members: { n: self.get(LocalB, {}).n },
-								}));
+								h.serve(RemoteB, (_, _principal, self) => {
+									factories++;
+									return { variant: "reader", members: { n: self.get(LocalB, {}).n } };
+								});
 							}),
 						},
 					],
@@ -875,13 +883,16 @@ describe("retry operations across links (fix rounds 1 and 2, Sol 3)", () => {
 				await flush();
 				const a = server.hold(LocalA, {}, context);
 				expect(a.state.value).toMatchObject({ kind: "failed", cause: { kind: "waiting" } });
-				// More at once than an object remembers ids: `through` stops each at the object it passed through already.
+				const made = factories;
 				for (let i = 0; i < operations; i++) a.retry();
 				await flush();
-				// Each went round once: server → worker → server, then stopped at the object it started from.
-				expect(retries).toBe(2 * operations);
+				// Each passed round the ring with one hop less per host (16 from the first), never sent at 0.
+				const lap = Array.from({ length: 16 }, (_, i) => 16 - i);
+				expect(hops.toSorted((x, y) => y - x)).toEqual(lap.flatMap((hop) => Array(operations).fill(hop)));
 				await flush();
-				expect(retries).toBe(2 * operations);
+				expect(hops).toHaveLength(16 * operations);
+				// Parked objects only passed it on: no attempt started.
+				expect(factories).toBe(made);
 			} finally {
 				await server.close(context);
 				await worker.close(context);
@@ -956,7 +967,7 @@ function reloadServer(server: Host<TestPrincipal>, setup: (host: FacetHost<TestP
 }
 
 describe("holds across a reload (slice 7b §6)", () => {
-	it("a swapped object keeps its holds: one [[r, value]] per changed member, never loading", async () => {
+	it("a swapped object keeps its holds: a fresh bound once the new instance is live, never loading (audit A9)", async () => {
 		const { server, client } = await linked((h) => serveShown(h, "v1"));
 		const shown = await client.get(Shown, {}, context);
 		await shown.bump(context);
@@ -966,7 +977,8 @@ describe("holds across a reload (slice 7b §6)", () => {
 		await reloadServer(server, (h) => serveShown(h, "v2"));
 		await transported();
 		expect(label).toEqual([{ kind: "value", value: "v2", ops: [["r", "v2"]], retired: false }]);
-		expect(n).toEqual([]);
+		// The fresh bound carries every member: an unchanged one may show one frame (nothing lost or stale).
+		expect(valuesOf(n)).toEqual([1]);
 		expect(states).toEqual([]);
 		expect(await shown.bump(context)).toBe(2);
 		await server.close(context);
@@ -1068,6 +1080,138 @@ describe("holds across a reload (slice 7b §6)", () => {
 		await server.close(context);
 	});
 
+	it("a swap sends each bound hold one fresh bound with the new instance's values, no state (audit A9)", async () => {
+		const server = createHost<TestPrincipal>({ address: Server(), principal: { kind: "server" }, onError: () => {} });
+		await server.load(
+			[{ name: "@test/app", facet: defineFacet<TestPrincipal>((h) => serveShown(h, "v1")) }],
+			context,
+		);
+		const [a, b] = memoryLinkPair();
+		server.accept(a, { principal: { kind: "owner" }, codec: testCodec() }, context);
+		const peer = new RawPeer(b);
+		const SHOWN = wireNames(Shown, "v");
+		await peer.next("hello");
+		hold(peer, 0, Shown);
+		hold(peer, 1, Shown);
+		await peer.next("bound");
+		await transported();
+		peer.received.length = 0;
+		await reloadServer(server, (h) => serveShown(h, "v2"));
+		await transported();
+		expect(new Set(peer.kinds())).toEqual(new Set(["bound"]));
+		const entries = peer.received.flatMap((message) => (message.kind === "bound" ? message.holds : []));
+		expect(entries.map(({ hold }) => hold).sort()).toEqual([0, 1]);
+		for (const entry of entries) expect(SHOWN.named(entry.members)).toEqual({ label: "v2", n: 0 });
+		await server.close(context);
+	});
+
+	it("a swap during a full window: calls are answered by the old names until the fresh bound goes (audit A9)", async () => {
+		const Two = remote("app.two-variants", {
+			version: 1,
+			params: {},
+			hostAddress: () => Server(),
+			variants: {
+				a: { state: { label: str() }, methods: { bump: method(undefined, int()), ping: method(undefined, int()) } },
+				b: { state: { label: str() }, methods: { ping: method(undefined, int()) } },
+			},
+		});
+		const serveTwo = (variant: "a" | "b", label: string) =>
+			defineFacet<TestPrincipal>((h) =>
+				h.serve(Two, (_, _principal, self) => {
+					const doc = self.state(N);
+					const ping = async () => 7;
+					const bump = async (ctx: Context) => {
+						await doc.change((draft) => {
+							draft.n += 1;
+						}, ctx);
+						return doc.value.n;
+					};
+					return variant === "a"
+						? { variant, members: { label: constant(label), bump, ping } }
+						: { variant, members: { label: constant(label), ping } };
+				}),
+			);
+		const server = createHost<TestPrincipal>({ address: Server(), principal: { kind: "server" }, onError: () => {} });
+		await server.load([{ name: "@test/app", facet: serveTwo("a", "v1") }], context);
+		const [a, b] = memoryLinkPair();
+		server.accept(a, { principal: { kind: "owner" }, codec: testCodec() }, context);
+		const peer = new RawPeer(b, { ack: false });
+		const A = wireNames(Two, "a");
+		await peer.next("hello");
+		hold(peer, 0, Two);
+		await peer.next("bound");
+		// A second message in flight: the window (two) is full.
+		const changed = defineFacet<TestPrincipal>((h) =>
+			h.serve(Two, (_, _principal, self) => ({
+				variant: "a",
+				members: {
+					label: self.derive([self.state(N)], ([d]) => `n ${d.n}`),
+					bump: async () => 0,
+					ping: async () => 7,
+				},
+			})),
+		);
+		await server.reload([{ name: "@test/app", facet: changed }], context);
+		await peer.next("bound");
+		// Swaps in place while the window is full: the fresh bound waits for a slot, the hold answers by its old names.
+		await server.reload([{ name: "@test/app", facet: serveTwo("a", "v2") }], context);
+		await transported();
+		peer.send({ kind: "call", call: 0, hold: 0, method: A.methods.bump! });
+		expect(partValue((await peer.next("result")).value!)).toBe(1);
+		// The new variant lacks a method of the old names: the attempt refuses it.
+		await server.reload([{ name: "@test/app", facet: serveTwo("b", "v3") }], context);
+		await transported();
+		peer.send({ kind: "call", call: 1, hold: 0, method: A.methods.bump! });
+		expect(await peer.next("error")).toMatchObject({ error: { error: { code: "invalid", reason: "member" } } });
+		peer.send({ kind: "call", call: 2, hold: 0, method: A.methods.ping! });
+		expect(partValue((await peer.next("result")).value!)).toBe(7);
+		expect(peer.kinds().filter((kind) => kind === "bound")).toEqual([]);
+		peer.ack();
+		const fresh = await peer.next("bound");
+		expect(fresh.holds[0]).toMatchObject({ hold: 0, variant: wireNames(Two, "b").variant });
+		expect(wireNames(Two, "b").named(fresh.holds[0]!.members)).toEqual({ label: "v3" });
+		await server.close(context);
+	});
+
+	it("collects the swapped-out instance while the hold's fresh bound waits for a slot (Astra, audit A9 GC)", async () => {
+		const Type = remote("astra.audit-gc", {
+			version: 1,
+			params: {},
+			hostAddress: () => Server(),
+			variants: { main: { state: { n: int() } } },
+		});
+		let declared: Self<TestPrincipal> | undefined;
+		const facet = (n: number) =>
+			defineFacet<TestPrincipal>((h) =>
+				h.serve(Type, (_, _principal, self) => {
+					declared = self;
+					return { variant: "main", members: { n: constant(n) } };
+				}),
+			);
+		const server = createHost<TestPrincipal>({ address: Server(), principal: { kind: "server" }, onError: () => {} });
+		await server.load([{ name: "@astra/audit-gc", facet: facet(1) }], context);
+		const [a, b] = memoryLinkPair();
+		server.accept(a, { principal: { kind: "owner" }, codec: testCodec() }, context);
+		const peer = new RawPeer(b, { ack: false });
+		await peer.next("hello");
+		hold(peer, 0, Type);
+		await peer.next("bound");
+		// A second bound in flight: the window is full.
+		await server.reload([{ name: "@astra/audit-gc", facet: facet(2) }], context);
+		await peer.next("bound");
+		const retired = new WeakRef(declared!);
+		declared = undefined;
+		await server.reload([{ name: "@astra/audit-gc", facet: facet(3) }], context);
+		await transported();
+		await flushed();
+		// Its fresh bound waits for an ack; the hold keeps the old names for calls, not the old instance.
+		expect(peer.kinds().filter((kind) => kind === "bound")).toEqual([]);
+		await expectCollected(retired);
+		peer.ack();
+		await peer.next("bound");
+		await server.close(context);
+	});
+
 	it("through a relay: a worker's reload reaches the tab as it reaches a direct consumer", async () => {
 		const { tab, workers, server } = await relayed();
 		const notes = await tab.get(PlacedNotes, { session: "S1" }, context);
@@ -1144,7 +1288,7 @@ describe("holds across more than one swap (fix round 1)", () => {
 describe("a hold after its object's live failure (final review)", () => {
 	const attempted = instancesOf(ChordObject, "attempt");
 
-	it("stops a member following another object's source at once (Sol, G1 own)", async () => {
+	it("follows a member re-exposing another object's source until the admitted commits published (audit A10)", async () => {
 		const Point = obj({ n: int() });
 		const A = local("app.foreign", { version: 1, params: {}, members: { x: Point } });
 		const B = remote("app.reexposing", {
@@ -1168,17 +1312,18 @@ describe("a hold after its object's live failure (final review)", () => {
 		const ref = await client.get(B, {}, context);
 		const calls = changesOf(await ref.x.watch(context));
 		failLive(attempted, self!, new ChordError({ code: "unavailable", message: "boom" }));
-		// A's change lands after B failed: B's re-exposed member no longer follows it.
+		// A's change lands after B failed, in the window before B's admitted commits published: it shows (one more
+		// change), then the member holds with the failure.
 		foreign!.set({ n: 1 });
 		await delivered();
-		expect([ref.x.value, valuesOf(calls)]).toEqual([{ n: 0 }, [{ failed: "boom" }]]);
+		expect([ref.x.value, valuesOf(calls)]).toEqual([{ n: 1 }, [{ n: 1 }, { failed: "boom" }]]);
 		await client.close(context);
 		await server.close(context);
 	});
 });
 
 describe("a hold across a swap whose mapping fails (final review)", () => {
-	it("sends the member's failure and heals with the new source (Sol)", async () => {
+	it("gets the member's failure in its fresh bound and heals with the new source (Sol, audit A9)", async () => {
 		const W1 = remote("app.swap-failed", {
 			version: 1,
 			params: {},
