@@ -1877,6 +1877,36 @@ validation and copies the v2 kernel added around Delta.
   reload, swapping the committed plugin back silently. Rejected: resolving with the report after the commit despite
   the abort (it would change the rule that an abort after the commit rejects). Examples for 7c (owner): full coverage,
   each example a folder with the host code and real plugin directories (35-39).
+- **Slice 10's points (owner, 2026-10-30; `slice-10.md`):** (D1, "a") the HTTP component defines the registry `Http`
+  (`"chord.http"`) and serves it through a facet of its own (`http.facet`, plugin name `chord.http`) that the app loads
+  with its plugins; its `compose` builds the router; the server reads it with `host.registry(Http, ctx)` per request.
+  (D2, "a") Wraps are built in slice 10 as designed (decision "HTTP routes and wraps", design §23): a contribution's
+  `wraps` run around routes in the component's phases (`observe`, `headers`, `transform`, outermost first), within a
+  phase in contributor order, by default around their own plugin's routes (`scope: "own"`; `"all"` explicit; `route`
+  narrows to one, a missing one a reported conflict). The server's `headers` option stays for every response, also
+  those no route makes (a 404, a refused request).
+  (D3, "a") Authentication is one app function, `authenticate(request, ctx) => P | undefined`, called once per request
+  and per upgrade; no Chord registry of resolvers (p3 composes its own from sharing, devices and the relay, with its
+  own precedence rules).
+  (D4, "k": a) Request bodies: `request.json(limit?)` (parsed JSON, 1 MiB by default, malformed: 400) and
+  `request.body(limit?)` (an async iterable of byte chunks, for uploads); nothing is read until a route asks; past its
+  limit the read stops and the request is answered 413; a disconnect aborts `ctx` and ends the iteration.
+  (D5, "a") Responses are descriptions: `json`, `html` (a full document; replaces the design's `page { title, body }`),
+  `bytes` (`mime`, `size`, `read(offset, length, ctx)`, `download?`, `ranges?`; 206/416, `HEAD`, safe
+  `Content-Disposition`, 64 KiB reads with backpressure, stopped on disconnect), `redirect`, `error`; `headers` on every
+  kind (cookies, a preview's own CSP); `fileResponse(path, options)` over a file; a throwing route is a 500 without its
+  message.
+  (D6, "a") Plugin WebSockets are `sockets` in the `Http` contribution: `{ "/terminal": (socket, request, ctx) => … }`;
+  the component checks the origin and runs `authenticate` (no principal: refused, 403, before plugin code), upgrades
+  and hands the plugin a `ws` WebSocket for its own protocol; patterns as routes; wraps do not apply; the links path is
+  the component's (`host.accept`). The design's channel component (acknowledged byte channels) waits for a second user
+  and would be built on top of it.
+  (D7, "a") `ws` is an optional peer dependency of Chord (pinned exactly), imported only by `next-node/http`, as
+  esbuild for plugins.
+  (D8, "a") Route patterns: exact segments, `:name` (one non-empty segment, percent-decoded, `params.name`) and a
+  trailing `/*` (the rest, possibly empty, `params["*"]`); the most specific match wins, segment by segment from the
+  left (exact before `:name` before `*`); one pattern from two contributions is a reported conflict, the first by
+  plugin name wins; `HEAD` falls back to the `GET` route.
 - **A plugin's npm dependencies are bundled; external only by opt-in (owner, 2026-10-29: "explicit opt in + (a)"):**
   a plugin's `dependencies` are installed into its own `node_modules` (`npm install --ignore-scripts`) and bundled into
   each facet that imports them (host packages, its `peerDependencies`, stay external and are passed in). On Node a
