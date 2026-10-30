@@ -1843,7 +1843,9 @@ type ReloadReport = {
   is missing) is kept old too, so a consumer edited together with a broken provider keeps working on its old code. At
   startup the same holds: `load` leaves a failing plugin out and resolves with `{ failed: [{ plugin, error }] }`; its
   consumers wait `failed { waiting }`; `load` never closes the host for a plugin (base code decides whether its core
-  failing is fatal). What no rule detects: a consumer relying on new behaviour of a kept provider whose contract did not
+  failing is fatal). A loader that kept a plugin on its loaded facet because its new code failed before staging (its
+  build, its evaluation) tells the host with `reload(facets, context, { failed })`: the host lists it and applies the
+  closure rule to it as to a plugin whose staging failed. What no rule detects: a consumer relying on new behaviour of a kept provider whose contract did not
   change (as in a rollout across hosts). Runtime states (registry conflicts, failed opens, migrations) stay per object
   after the commit (`onError` as always).
 - **Staging** runs every facet's setup into a staged table beside the live one (types with their factory, `linger` and
