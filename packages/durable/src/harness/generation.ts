@@ -242,7 +242,7 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 			}
 			await runtime.commit(async (tx) => {
 				// The context ends in a message the model answers, so the conversation has an entry.
-				let cutoff = (await tx.scanEntries({ conversationId }, 1)).items[0]!.id;
+				let cutoff = (await tx.latestEntryId(conversationId))!;
 				for (const entry of entries) cutoff = (await tx.appendEntry(SystemEntry, conversationId, entry)).id;
 				// Checked in this commit, so a compaction admitted during preparation counts.
 				if (threshold === "background" && (await tx.doc(LiveDoc, conversationId)).compactions === undefined) {
@@ -266,12 +266,18 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 			if (task.restarts !== undefined) return interrupted(runtime, task.state.checkpoint, context);
 			const { attempt, compacted, model: ref, thinkingLevel, streamOptions, cutoff } = task.state.checkpoint;
 			const conversationId = runtime.conversationId;
-			await runtime.commit(async (tx) => {
-				const live = await tx.doc(LiveDoc, conversationId);
-				await convertPartial(tx, live, conversationId);
-				live.generation = { attempt };
-				return undefined;
-			}, context);
+			// The attempt shown is presentation, stored like progress (`PROGRESS_COMMIT`); converting a partial left by an
+			// interrupted attempt appends an entry, which makes the commit immediate.
+			await runtime.commit(
+				async (tx) => {
+					const live = await tx.doc(LiveDoc, conversationId);
+					await convertPartial(tx, live, conversationId);
+					live.generation = { attempt };
+					return undefined;
+				},
+				context,
+				PROGRESS_COMMIT,
+			);
 			const model = runtime.models.getModel(ref.provider, ref.modelId);
 			if (model === undefined) return failNoModel(runtime, ref, context);
 			const view = await runtime.context(conversationId, context, { at: cutoff });
