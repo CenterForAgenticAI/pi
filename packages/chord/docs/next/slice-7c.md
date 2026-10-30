@@ -60,7 +60,7 @@ value a worker (slice 10) or a page (slice 11) evaluates where it runs.
 | a Node builtin (`node:fs`, `fs`) | external (Node builds); a browser build fails |
 | CSS (browser builds) | one stylesheet per facet (`css`) |
 | an asset (`import url from "./icon.svg?url"`, `.wasm`, browser builds) | a content-hashed file in `assets`; the import is its URL under the app's `options.publicPath` |
-| `import.meta.url`, `__dirname`, `__filename`, dynamic `import()`, top-level `await` | a build error pointing to `pluginFile` (§3) |
+| `import.meta.url`, `__dirname`, `__filename`, a literal dynamic `import("x")`, top-level `await` | a build error pointing to `pluginFile` (§3); a computed `import(x)` cannot be seen at build and fails when it runs, through the facet's `require` naming the facet |
 | anything else (a relative path into base code, a package not in `dependencies`) | a build error naming the file and the rule |
 
 - Output: `format: "cjs"`, wrapped `(function (require, module, exports) { … })`; TypeScript stripped, JSX automatic
@@ -98,12 +98,15 @@ Decision "Per plugin at startup and reload" changes `host.load` and `host.reload
 - **`host.load(facets, ctx)`** resolves with `{ failed: [{ plugin, error }] }`: a plugin whose setup throws (or that is
   refused at declaration: invalid name, a type or registry served twice, a remote type on a host without principal or
   address, `checkAccepts`) is left out and reported; the others publish; its consumers wait `failed { waiting }`. `load`
-  never closes the host for a plugin (base code decides whether its core failing is fatal).
+  never closes the host for a plugin (base code decides whether its core failing is fatal). A plugin left out is
+  loaded by the next reload after an edit rebuilt it (it is dirty).
 - **`host.reload(facets, ctx)`**: staging per plugin. A plugin whose new code fails in staging (setup, a factory against
   the recording `self`, a declaration error, `checkAccepts`) keeps its loaded facet (as if passed unchanged), and
   staging runs again without its new code. **The closure rule:** a changed plugin whose recorded requests (staging
-  records them with their contract versions) would not bind because the plugin they need was kept old, or is missing,
-  is kept old too (repeat until stable). The report gains `failed: [{ plugin, error }]` (the same list as `load`'s; an added plugin that fails is left out); the commit applies the rest.
+  records them, for its existing objects, with their contract versions) would not bind (the same check as a real
+  bind, the provider's host address included) because the plugin they need was kept old, or because nobody serves the
+  name while any plugin of this reload failed (a failed new setup may be what would have served it: owner, 2026-10-30,
+  "keep"), is kept old too (repeat until stable). The report gains `failed: [{ plugin, error }]` (the same list as `load`'s; an added plugin that fails is left out); the commit applies the rest.
 - **The component** builds and evaluates per plugin: a plugin whose build fails or whose evaluation throws is passed to
   the host as its loaded facet at a reload, with `reload(facets, context, { failed })` naming it (the host applies the
   closure rule to it and lists it in `failed`), left out at startup and reported with the host's report.

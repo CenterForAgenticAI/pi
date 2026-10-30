@@ -1852,7 +1852,9 @@ validation and copies the v2 kernel added around Delta.
   `checkAccepts`) keeps its old code (its loaded facet, unchanged), and every other plugin of the reload applies; the
   report lists it (`failed: [{ plugin, error }]`, as `load`'s; an added plugin that fails is left out); staging retries without it. (3) **The closure rule** (Opus): after
   staging, a changed plugin whose recorded requests would not bind because the plugin they need was kept old or left
-  out is kept old too, so a consumer edited together with a broken provider keeps working on its old code. (4) What no
+  out is kept old too, so a consumer edited together with a broken provider keeps working on its old code. Its "missing"
+  branch (owner, 2026-10-30: "keep", against narrowing it to names served before): a request nobody serves keeps its
+  plugin old whenever any plugin of the reload failed, since a failed new setup may be what would have served it. (4) What no
   rule detects: a consumer relying on new behaviour of a kept provider whose contract (version, fingerprint) did not
   change: the same risk as a rollout across hosts, documented. (5) `rollout` keeps a plugin dirty while it was kept old
   on any host. Built with slice 7c (the kernel's `load` and `reload` change with it).
