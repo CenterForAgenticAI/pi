@@ -1869,6 +1869,14 @@ validation and copies the v2 kernel added around Delta.
   command overridable). (4) Cross-plugin imports: any file of a discovered plugin, copied, documented as contracts and
   side-effect-free modules only, listed by the build, no static check yet. (5) `pluginFile` answered per facet by the
   `require` evaluation passes.
+- **Slice 7c build: an abort after the commit names what it applied (owner, 2026-10-30: "yes"; fix round 1, item
+  11, Astra):** `host.reload` still rejects `aborted` when its context aborts after the commit (the commit stands, only
+  the wait ends), and the error carries `details.committed`, a `CommittedReload { added, changed, removed, failed }`
+  (plugin names; `failed`: kept on their old code). Why: the plugins component keeps per host the facet each plugin
+  runs and adopts it when the reload resolves; on this rejection it would keep the old facet and pass it at the next
+  reload, swapping the committed plugin back silently. Rejected: resolving with the report after the commit despite
+  the abort (it would change the rule that an abort after the commit rejects). Examples for 7c (owner): full coverage,
+  each example a folder with the host code and real plugin directories (35-39).
 - **A plugin's npm dependencies are bundled; external only by opt-in (owner, 2026-10-29: "explicit opt in + (a)"):**
   a plugin's `dependencies` are installed into its own `node_modules` (`npm install --ignore-scripts`) and bundled into
   each facet that imports them (host packages, its `peerDependencies`, stay external and are passed in). On Node a

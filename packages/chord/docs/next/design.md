@@ -89,7 +89,8 @@ worker worker worker      addressable by a typed address, started on demand
 | worker | yes, many | stamped by the parent | started on demand by the app |
 
 Clients serve only `local` types (they are not addressable): a host without a principal or without an address refuses
-to serve a remote type (`load` throws; a remote object is owned by a principal of the host serving it, owner,
+to serve a remote type (a declaration error: `load` leaves that plugin out and reports it, a reload keeps it on its
+old code; a remote object is owned by a principal of the host serving it, owner,
 2026-10-24; and placed by its host address, owner, 2026-10-29). No client providers for now (owner,
 2026-10-28): client-side capabilities (a camera, WebMCP tools) go through an owner's requests that clients answer
 (section 20, the Questions service). A client's local
@@ -714,7 +715,8 @@ host.serve(Notes, ({ session }, principal, self) =>
   the watches before natives open, so a failed open still has them). Every trigger works like `ref.retry()`: the
   backoff window is skipped, an attempt starts now, holders are told `loading`. `retryOn` sources must live independently of the
   attempt (registry values); a reference's member is a type error. A facet cannot fail
-  after `load`: its setup only declares (a throwing setup rejects `load`, slice 2; owner, 2026-10-26).
+  after `load`: its setup only declares (a throwing setup leaves its plugin out of `load`, reported in `load`'s
+  `failed`; decision "Per plugin at startup and reload"; owner, 2026-10-26, 2026-10-30).
 
 ### The factory principle
 
@@ -1814,7 +1816,9 @@ it does not wait for objects to go live); a plugin whose new code fails keeps it
 report's `failed` (per plugin, below).
 Reloads run one after another per host; before `load` resolved it throws, after `close` it rejects `released/closed`;
 `context` bounds it (decision 4: no install watchdog): its abort before the commit rejects `aborted` and changes
-nothing, after the commit it only ends the wait.
+nothing, after the commit it only ends the wait: it rejects `aborted` with `details.committed`, a `CommittedReload`
+`{ added, changed, removed, failed }` naming what the commit applied (the plugins component adopts it, so a later
+reload never passes a committed plugin's old facet; owner, 2026-10-30).
 
 ```ts
 type ReloadReport = {
@@ -1827,9 +1831,11 @@ type ReloadReport = {
 ```
 
 ```
-1. load      new bundles (the app's or loader's: a facet arrives evaluated); an import or syntax error rejects
-2. staging   every setup into a staged table, and every affected object's new factory against a recording `self`
-             (declarations only, nothing activated, bound or opened); any throw rejects
+1. load      new bundles (the app's or loader's: a facet arrives evaluated); a plugin whose build or evaluation
+             fails keeps its loaded facet (`reload(facets, context, { failed })`)
+2. staging   every new setup into a staged table, and every affected object's new factory against a recording
+             `self` (declarations only, nothing activated, bound or opened); a plugin whose new code throws keeps its
+             old code, staging runs again without it, then the closure rule (below)
 3. commit    one batch: the host switches to the new code atomically, a publication (7a)
 4. after     each object takes its fate (below)
 ```
@@ -1848,8 +1854,10 @@ type ReloadReport = {
   closure rule to it as to a plugin whose staging failed. What no rule detects: a consumer relying on new behaviour of a kept provider whose contract did not
   change (as in a rollout across hosts). Runtime states (registry conflicts, failed opens, migrations) stay per object
   after the commit (`onError` as always).
-- **Staging** runs every facet's setup into a staged table beside the live one (types with their factory, `linger` and
-  provider, `bindProvider(contract, options.accepts)`; registry providers; facet contributions by plugin), then, for
+- **Staging** runs every new setup (each plugin into its own table, merged; an unchanged or kept plugin's loaded
+  entries are reused, its setup not run again) into a staged table beside the live one (types with their factory,
+  `linger` and provider, `bindProvider(contract, options.accepts)`; registry providers; facet contributions by
+  plugin), then, for
   every live, activating, parked or failed object of a changed or removed plugin whose type is still served, its new
   factory with the object's params (and principal) against a recording `self`: it records what the factory opens,
   the documents, tables and jobs it declares with their versions, its contributions and requests, runs the checks an
@@ -1899,7 +1907,9 @@ type ReloadReport = {
   in their own process, model runtimes, sandboxes and the search index rebuild in milliseconds); reloading the plugin
   that owns SSH connections or the relay socket hurts.
 - **No factory trial, no migrate dry run, no consumer contract check during staging:** staging records declarations;
-  incompatible consumers wait at bind (`failed { waiting }`, `contract_mismatch`).
+  incompatible consumers wait at bind (`failed { waiting }`, `contract_mismatch`). The one exception is the closure
+  rule above: when a plugin of the reload failed, a changed plugin's recorded requests are checked as a bind would
+  check them, to keep it old.
 - **Start barrier** (host start and first load; dependency model §6, decision (a), slice 7a): `load` runs the facets'
   setups (the core facet with its start data among them) and **publishes** them in one batch (types served,
   registries served and composed once, contributions in their tables); requests that waited for the publication are
@@ -1920,8 +1930,8 @@ type ReloadReport = {
 ### Rollout across hosts
 
 - **The rollout is the app's** (decision "Slice 7b's open points" (3)): it calls `host.reload` on each host in order,
-  server, then workers, then clients; Chord guarantees per host (staging, commit, rollback). The app kit's
-  dev component (slice 7c) is such an app. An install never waits for activations (a reverse-order rollout would
+  server, then workers, then clients; Chord guarantees per host (staging, commit, a failing plugin kept on its old
+  code). The plugins component's `rollout` (slice 7c) runs such steps. An install never waits for activations (a reverse-order rollout would
   deadlock).
 - **Each host knows only its own install** (model §5): until its reload commits (while the app bundles, before
   `host.reload`), a hold that does not fit its running code is answered `failed { waiting, version }` and the commit
