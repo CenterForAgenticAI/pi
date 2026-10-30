@@ -1,6 +1,6 @@
 # Slice 10: HTTP and workers (spec)
 
-Status: **draft** (owner, 2026-10-30: "do it"; the points marked **Decision needed** go to the owner one at a time).
+Status: **points decided** (owner, 2026-10-30: D1-D12 in the decision "Slice 10's points"); next: spec reviews.
 Slice 10 builds two Node components of the app kit (decision "Slice 7b's open points" (6)): `chord/next/http` (the
 server's HTTP and WebSocket entry, routes contributed by plugins through a registry, responses as descriptions) and
 `chord/next/workers` (a worker process per host address, started on demand, stopped when idle, its plugins shipped from
@@ -144,7 +144,8 @@ const workers = createWorkers({
 	idleMs: 300_000,
 	onOutput: (address, stream, chunk) => logs.append(address.key, stream, chunk),
 }, ctx);
-server.route(Session, { authorize: app.authorizeSession, resolve: workers.resolve }, ctx);
+const sessions = server.route(Session, { authorize: app.authorizeSession, resolve: workers.resolve }, ctx);
+sessions.retry(Session({ id }));    // a Retry button: ends the address's backoff (D10b)
 workers.state                       // JSON watchable: { [address key]: { status, pid?, startedAt?, error? } }
 await workers.stop(Session({ id }), ctx);   // archive; the next hold starts it again
 ```
@@ -195,19 +196,27 @@ returns `{ hosts: [{ host, report }] }`, D12). A worker starting during or after
 start message. A worker that fails to apply (closed, aborted) is listed and does not stop the rollout; a plugin kept old
 on any worker stays dirty (7c's rule).
 
-> **Decision needed D9: keep-alive inputs.** Chord's `host.activity` plus app counts (`busy`: a JSON watchable of
-> numbers, e.g. Durable's active tasks) reported to the server; `idleMs` default 5 min; checked every second.
-> Recommended (p2's rule, with Chord's counts instead of p2's own).
+> **Decided D9 (owner, 2026-10-30: "a"):** Chord's `host.activity` plus the app's `busy` counts (a JSON watchable of
+> numbers, e.g. Durable's active tasks), reported to the server when they change; `idleMs` default 5 min, checked every
+> second; never while the worker starts.
 
-> **Decision needed D10: failed starts.** p2 keeps a failed start sticky until the owner presses Retry; with Chord's
-> route backoff a failed start is retried after 1 s, doubling to 60 s, while holds exist. Recommended: the kernel's
-> backoff (no sticky error); `state` shows the error, and `workers.retry(address)` skips the backoff (a Retry button).
+> **Decided D10 (owner, 2026-10-30: "a"):** the kernel's route backoff (1 s doubling to 60 s while holds exist,
+> `resolve_failed`), no sticky failure; `state` shows the error and when the next try is.
+>
+> **Decided D10b (owner, 2026-10-30: "b"):** a kernel change: `host.route(Kind, options, ctx)` returns a `RouteHandle`
+> with `retry(address)`, which ends that address's backoff so `resolve` runs now if the address has holders (nothing
+> without holders); the app wires its Retry button to the handle (`sessions.retry(Session({ id }))`); the workers
+> component has no `retry` of its own.
 
-> **Decision needed D11: scripts shipped to workers.** As above, against each worker building its own plugins (240 ms
-> of esbuild per cold start, and a second build per worker for one edit). Recommended.
+> **Decided D11 (owner, 2026-10-30: "a"):** workers never build; the server discovers and builds every plugin, one set
+> for every host; a worker's start message carries its kind's scripts and a reload ships new ones. Plugins are defined
+> where the server can read them (owner: "no cwd specific plugins, which might be alright; that way workers can live
+> anywhere"). A worker on another machine needs the plugin directories only for `chord.external` packages and
+> `pluginFile` (both resolve in the plugin's directory).
 
-> **Decision needed D12: a step over many hosts.** `RolloutStep.reload` returns `{ hosts: [{ host, report }] }` instead
-> of one `ReloadReport` (7c's in-process step returns one host). Recommended.
+> **Decided D12 (owner, 2026-10-30: "a"):** `RolloutStep.reload` returns `{ hosts: [{ host, report }] }` (7c's
+> in-process step returns a list of one); workers reload in parallel; one that closed during the step is listed with its
+> error and does not stop the rollout.
 
 ## 5. Not in slice 10
 
@@ -222,7 +231,7 @@ transfers as a Chord helper (an owner pattern, design §23, unchanged); telemetr
   made safe, a disconnect stopping `read`); bodies past their limit; a throwing route (500, reported); the links
   endpoint (`host.accept`, a refused socket, the output cap); plugin sockets; a reload swapping a route while a request
   runs on the old router; close. Workers: a start on the first hold, the lock, `ready` timeout, idle stop and a hold
-  keeping it, `busy` counts, a crash (reported, re-resolved while held), `stop`, `retry`, the rollout step (a worker
+  keeping it, `busy` counts, a crash (reported, re-resolved while held), `stop`, `RouteHandle.retry` (D10b), the rollout step (a worker
   starting during it gets the new scripts), the child's shutdown and disconnect.
 - GC: requests (their root scopes and bodies) and stopped workers' state collected; no listener left on a closed socket.
 - Examples (each a folder, as 7c's): `40-http` (routes, a download with ranges, a socket), `41-workers` (a server

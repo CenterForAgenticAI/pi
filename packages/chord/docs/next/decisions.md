@@ -1907,6 +1907,25 @@ validation and copies the v2 kernel added around Delta.
   trailing `/*` (the rest, possibly empty, `params["*"]`); the most specific match wins, segment by segment from the
   left (exact before `:name` before `*`); one pattern from two contributions is a reported conflict, the first by
   plugin name wins; `HEAD` falls back to the `GET` route.
+  (D9, "a") Worker keep-alive: the child reports `host.activity` and the app's `busy` counts (a JSON watchable of
+  numbers, e.g. Durable's active tasks) whenever they change; the server stops a worker whose counts were all zero for
+  `idleMs` (default 5 min, checked every second), never while it starts; a stop sends `shutdown` (the host closes),
+  the process tree killed after 5 s.
+  (D10, "a") A failed worker start uses the kernel's route backoff (1 s doubling to 60 s while holds exist,
+  `resolve_failed` reported); no sticky failure; `workers.state` shows the error and when it is tried again.
+  (D10b, "b") `host.route(Kind, options, ctx)` returns a `RouteHandle` with `retry(address)`: it ends that address's
+  backoff, so `resolve` runs now if the address has holders (a Retry button for a worker that failed to start, wired
+  by the app to the handle; the workers component has no `retry` of its own).
+  (D11, "a") Workers never build: the server's plugins component discovers and builds every plugin; a worker's start
+  message carries its kind's current scripts (`Built`, plain data) and a reload ships new ones (D12); the child's
+  `plugins` only evaluates (no esbuild, no watcher). So plugins are defined where the server can read them, one set for
+  every host (owner: "no cwd specific plugins, which might be alright; that way workers can live anywhere"); project
+  plugins (design §26 #14) would be discovered and built by the server too. A worker on another machine needs the
+  plugin directories there only for `chord.external` packages and `pluginFile`.
+  (D12, "a") A rollout step returns one report per host, `{ hosts: [{ host, report }] }` (7c's `RolloutStep` changes;
+  the in-process server step returns a list of one); the workers step reloads every running worker in parallel; a
+  worker that closed during it is listed with its error and does not stop the rollout; a plugin's dirty mark clears
+  only when it applied on every host of every step.
 - **A plugin's npm dependencies are bundled; external only by opt-in (owner, 2026-10-29: "explicit opt in + (a)"):**
   a plugin's `dependencies` are installed into its own `node_modules` (`npm install --ignore-scripts`) and bundled into
   each facet that imports them (host packages, its `peerDependencies`, stay external and are passed in). On Node a
@@ -2512,7 +2531,7 @@ From `research/chord-on-durable-objects.md`, adopted for the Chord v2 kernel bec
   beyond a use (a pinned Durable phase holding an old table is fine). Natives reach other plugins only this way: no
   `opaque` members, no natives in method results. What a native's old value does after its owner restarts is the
   owner's `close` (a model runtime keeps working until collected; a closed SSH connection fails its in-flight `exec`).
-- **HTTP is an optional Chord component** (`@earendil-works/chord/next/http`): a route gets a plain request summary
+- **HTTP is an optional Chord component** (**superseded in part** by "Slice 10's points": `html` instead of `page`, request bodies through `json`/`body`, authentication one app hook, plugin sockets instead of a channel component until a second user) (`@earendil-works/chord/next/http`): a route gets a plain request summary
   (method, path params, query, principal, selected headers; parsed and capped JSON bodies; uploads handed over in
   chunks) and returns a response description (`json`, `page`, `bytes` with `size`, `mime` and `read(offset, length)`,
   `redirect`, `error`). The component does ranges (206/416), HEAD, download headers, streaming, abort on disconnect and
