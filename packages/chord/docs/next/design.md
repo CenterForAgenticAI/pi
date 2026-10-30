@@ -226,8 +226,10 @@ server.route(Session, {
 
 Do not pass `context.abortSignal` to `fork`: `host.close` aborts it, which kills the worker and makes Node emit an
 `error` event that crashes an app without a handler. Chord closes the link at `host.close`; the worker exits when its
-parent link closes. `resolve` returns the link before the worker has loaded (the worker connects first, W6): a
-`resolve` waiting for the worker's `load` while the worker's facets hold server types would deadlock.
+parent link closes. `resolve` returns the link before the worker has loaded (the worker connects first, W6): made
+later, the link would leave the worker's `hello` unread and the heartbeat would close it during a long `load` (slice
+10's spec review; the deadlock once feared here does not happen: 7a's barrier ends its first pass on a wait on another
+host). The workers component (§23) does this.
 
 | Call | Meaning |
 | --- | --- |
@@ -236,7 +238,7 @@ parent link closes. `resolve` returns the link before the worker has loaded (the
 | `reload([{ name, facet }], context)` | the complete new plugin set after `load` (a facet passed as the same object is an unchanged plugin): staging, then one commit, then every object of a changed or removed plugin takes its fate; resolves with a report (a plugin whose new code fails keeps its old code, listed in `failed`); one at a time (section 21, slice 7b) |
 | `connect(link, { principal, trusted?, codec? }, context)` | the link to the parent, at most one open; once it closed (a drop), `connect` takes the next, and every remote reference over the parent is held again on it. `principal` = who the parent is |
 | `accept(link, { principal, trusted?, codec? }, context)` | a link from a child; holds and calls on it act as `principal` |
-| `route(Kind, { authorize, resolve }, context)` | how to reach hosts of a kind (below); called before `load`, once per kind; work arriving on its links runs under `context`; returns a `RouteHandle` whose `retry(address)` ends that address's backoff (slice 10 D10b) |
+| `route(Kind, { authorize, resolve }, context)` | how to reach hosts of a kind (below); called before `load`, once per kind; work arriving on its links runs under `context`; returns a `RouteHandle`: `retry(address)` resolves the address again (D10b), `suspend(address)` stops resolving it until `retry` (R1) |
 | `get(Type, params, context, { readyTimeout? })` | a reference once its object is live, waiting through `loading`, `failed { transient }` and `failed { waiting }` up to its `readyTimeout` (section 7) |
 | `hold(Type, params, context, { readyTimeout? })` | a reference at once that follows its object until released (section 7) |
 | `close(context)` | closes the links (children, routes, then the parent), then ends every object at once and tears them down, the last to go live first (reason `close`); rejects with an `AggregateError` of the native closes that threw |
@@ -304,12 +306,14 @@ host.route(Session, {
   aborted only when the host closes; a link it returns after that is closed at once. A `resolve` whose holds were all
   released meanwhile finishes and its link is kept (a worker start that produced a link finishes even if its first
   requester left). A `resolve` that never settles is the app's (it bounds its own `fork`); getters still time out.
-- **Failure and re-resolve:** a rejected `resolve` (reported `resolve_failed`), a returned link already closed, or the
-  address's link closing while holds over it exist, starts the **per-address backoff** (1 s doubling to 60 s; a map
-  keyed by address, separate from objects' identity backoff). Meanwhile the holds are `loading`. Only a link that
-  completed its handshake resets the backoff. Without holds for the address nothing is resolved again, so passive
-  viewers recover without a user action while they hold. `RouteHandle.retry(address)` (slice 10 D10b) ends an
-  address's backoff, so `resolve` runs at once if it has holders (a Retry button for a worker that failed to start).
+- **Failure and re-resolve** (slice 10 R2, owner, 2026-10-30; replaces the per-address backoff): a route has no
+  timer. A rejected `resolve` (reported `resolve_failed`) or a returned link already closed fails the route's holders
+  with its error (`failed`, not an endless `loading`); the route resolves again only for a new hold, on
+  `RouteHandle.retry(address)`, or once after the address's link dropped while holds exist (a drop of a healthy link
+  recovers at once; whether a crashed worker comes back is the `resolve`'s answer). `RouteHandle.suspend(address)`
+  (R1) stops resolving an address (its holders stay `loading`) until `retry`. A network route that wants to reconnect
+  keeps its own policy in its `resolve`. The workers component answers a failed address's `resolve` with its stored
+  failure at once: workers never restart by themselves (§23).
 - Chord never closes a route link itself except at `host.close`; stopping idle workers is the app's (`host.activity`).
 - Work arriving on a route's links runs under the context given to `host.route(Kind, options, context)` (slice 4b).
 
@@ -2149,12 +2153,13 @@ not apply.
 
 ### Workers (`@earendil-works/chord/next/workers`)
 
-`createWorkers({ entry, start, plugins, idleMs?, onOutput? }, ctx)` gives a route's `resolve` (a forked worker per
+`createWorkers(host, Kind, { entry, start, plugins, idleMs?, onOutput? }, ctx)` routes `Kind` itself (a forked worker per
 address, IPC, a start message with the app's start data and the worker kind's built scripts, `ready` within 60 s), a
 `state` watchable per address and `stop(address)`; `workerMain(fn)` is the child's side. One live worker per address
-(a kernel lock taken by the child before it opens its store). Keep-alive (D9): the child reports `host.activity` and
-the app's `busy` counts; the server stops a worker idle (all zero) for `idleMs` (5 min). A failed start uses the
-route's backoff (D10); `RouteHandle.retry(address)` (D10b) ends it. Workers never build (D11): the server's plugins
+(a kernel lock taken by the child before it opens its store). Keep-alive (D9, R3): the child reports when `host.activity`
+and the app's `busy` counts flip between all zero and not; the server stops a worker idle (all zero) for `idleMs` (5 min). Workers start on demand and
+never restart by themselves (R2): a crash or a failed start leaves the address failed with its error until
+`workers.retry(address)` or a rollout reaching workers; `workers.stop` suspends the address (R1). Workers never build (D11): the server's plugins
 component builds every plugin; workers evaluate shipped scripts, and `workers.step(name)` ships a rollout's scripts to
 every running worker (D12: one report per host).
 

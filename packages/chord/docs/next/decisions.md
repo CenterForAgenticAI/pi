@@ -1911,7 +1911,7 @@ validation and copies the v2 kernel added around Delta.
   numbers, e.g. Durable's active tasks) whenever they change; the server stops a worker whose counts were all zero for
   `idleMs` (default 5 min, checked every second), never while it starts; a stop sends `shutdown` (the host closes),
   the process tree killed after 5 s.
-  (D10, "a") A failed worker start uses the kernel's route backoff (1 s doubling to 60 s while holds exist,
+  (D10, "a"; **superseded** by R2 below: no automatic restarts, no route backoff) A failed worker start uses the kernel's route backoff (1 s doubling to 60 s while holds exist,
   `resolve_failed` reported); no sticky failure; `workers.state` shows the error and when it is tried again.
   (D10b, "b") `host.route(Kind, options, ctx)` returns a `RouteHandle` with `retry(address)`: it ends that address's
   backoff, so `resolve` runs now if the address has holders (a Retry button for a worker that failed to start, wired
@@ -1926,6 +1926,47 @@ validation and copies the v2 kernel added around Delta.
   the in-process server step returns a list of one); the workers step reloads every running worker in parallel; a
   worker that closed during it is listed with its error and does not stop the rollout; a plugin's dirty mark clears
   only when it applied on every host of every step.
+  Spec review (Fable, Opus): (R1, "a") `RouteHandle.suspend(address)`: while suspended the route does not resolve the
+  address, its holders stay `loading`; `retry(address)` ends the suspension; `workers.stop` suspends, then stops (an
+  archived session stays stopped while a tab still holds it).
+  (R2, owner: "take it"; **supersedes D10 and the kernel's route backoff**) **Workers start on demand and never
+  restart by themselves** (owner: "if it crashes, chances are it had a good reason to crash, and restarting it won't
+  fix that"; D10 as recommended was a restart loop whenever a consumer holds). A worker starts for a hold of an address
+  that has not failed (the first, or one after an idle stop or `stop`). A crash or a failed start marks the address
+  failed with its error until `workers.retry(address)` (`RouteHandle.retry`) or a rollout that reaches workers (new
+  code may fix it, as a reload retries failed objects); its holders and new holds see `failed` with that error, nothing
+  forks. Kernel: a route has no backoff timer; it resolves only for a hold, on `retry`, or after its link dropped while
+  held, and a rejected `resolve` fails the route's holders with its error (no endless `loading`); a network route that
+  wants to reconnect keeps that policy in its own `resolve`. The workers component owns its route
+  (`createWorkers(host, Kind, options)` calls `host.route` and keeps the handle) and answers a resolve of a failed
+  address with the stored failure at once. A start finding the lock still held by a draining old worker waits for it in
+  the child (bounded by the start timeout). R1's `suspend` and D10b's `retry` stay.
+  Other timed retries (owner, 2026-10-30: "keep them as is for now"): objects' transient failures (1 s to 60 s while
+  held), `self.on` handlers that throw (1 s to 60 s while live) and `self.onLive` restarts (the same, reset after a
+  minute's run) stay; they heal real transient failures (a network down for a while) and cost at most one try a minute
+  each; revisit if one shows up as a loop in practice.
+  (R3, "a"; refines D9) The child reports only the flip: `{ idle: true }` when every count (`host.activity` and `busy`)
+  becomes zero, `{ idle: false }` when one becomes nonzero; the server's idle clock starts at `true` (a status message
+  costs about 6 µs on each side, a local call 2.9 µs: no report per call).
+  (R4, "a if configurable at runtime so allowed domains can be added and removed by a plugin") Before `authenticate`, the
+  component refuses (403) a `Host` that is neither loopback nor allowed, and an upgrade (`/chord`, a plugin socket)
+  whose `Origin` is not the request's own origin; `request.origin` comes only from an accepted `Host` (`http://` on
+  loopback, `https://` for an allowed host); `headers(request, principal)` gets the principal. Allowed hosts are the
+  server option `allowedHosts` plus every `hosts` list in `Http` contributions: a plugin adds and removes its domains
+  at runtime by contributing a writable (`self.writable`, design §17), the router recomposed on each change (a tunnel or
+  relay plugin names its public host).
+  **The app kit is malleable by plugins** (owner, 2026-10-30: "all of this should be malleable via plugins"; "yes"):
+  in `http`, `workers` (and slice 11's components) every option that is not bootstrap is either a contribution to
+  `Http` (routes, wraps, sockets, hosts; writables where it changes at runtime) or a function the component calls per
+  use (`authenticate`, `headers`, a worker's `start`, `idleMs`), which the app backs with its own registries; nothing is
+  copied out of a contribution or an option at startup. Bootstrap stays base code, changed by a restart: the listen
+  address and port, the links path, the worker entry module with its `execArgv` and `env`, the host kind workers serve.
+  (R5, "agree") `workers.state` per address key: `{ status: "starting" | "running" | "stopping", pid, startedAt }` or
+  `{ status: "failed", error: { message, code?, reason? }, at, stderrTail? }`; no entry when stopped or never started
+  (a clean stop removes it); `failed` stays until Retry or a rollout; plain JSON (a core object may serve it).
+  (R6, "b, common enough") `bytes` may omit `size`: chunked transfer encoding, no ranges (no `Accept-Ranges`), `read`
+  called with growing offsets until it returns an empty chunk (a zip built on the fly, a growing log, an export paged
+  from a worker).
 - **A plugin's npm dependencies are bundled; external only by opt-in (owner, 2026-10-29: "explicit opt in + (a)"):**
   a plugin's `dependencies` are installed into its own `node_modules` (`npm install --ignore-scripts`) and bundled into
   each facet that imports them (host packages, its `peerDependencies`, stay external and are passed in). On Node a
@@ -2626,6 +2667,12 @@ Everything else from earlier lists is decided (see the entries above and `packag
 - **Future goal: deploy Chord apps to Cloudflare Durable Objects and similar platforms.** Hot reload there is not
   needed; composition through plugins is (plugin set fixed at deploy). Research in `research/chord-on-durable-objects.md`.
 - Deferred until a concrete case: jobs as objects and where a flow lives (when login is ported); project plugins.
+- **Chord from code mode scripts** (owner, 2026-10-30: "something we want"; p3): the agent's code mode scripts get a
+  Chord call scope (`host.root`) to call objects and change things: `chord.get("notes.store", {})` by name, every
+  argument checked by the provider's closed schema. Needs, to design with p3: a principal for the agent (acting as who
+  runs the session, so views apply their authority; never the owner's powers in a guest's session), a by-name `get`
+  and a list of served contracts with their members and schemas (the agent's declarations), values crossing the
+  sandbox boundary as plain data, the scope sealed when the script ends.
 - **Every object may contribute** (owner, 2026-10-29: "note it down as something to consider for the future; can be
   changed later without a need for migrations"): lift R21 so objects with params and `remote` objects contribute too;
   the entry lives while the object is live, its identity is the object's (type, params, principal key); `contribute`
