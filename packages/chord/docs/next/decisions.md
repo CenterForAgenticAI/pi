@@ -1838,6 +1838,35 @@ validation and copies the v2 kernel added around Delta.
   key hold two pins (counted on the key's one source; the document is loaded and kept once). **Binary append commit-to-frame
   median +10% accepted** (owner, 2026-10-29; CPU 10, 0.031 → 0.034-0.035 ms): equal with the young generation pinned, fewer
   scavenges over the whole benchmark (V8's young-generation sizing, slice 7b fix round 3).
+- **Per plugin at startup and reload (owner, 2026-10-30: "yes", "1. lgtm 2. yes"; analyses
+  `/tmp/per-plugin-{opus,fable}.md`):** supersedes "Rollback is all-or-nothing per host" (2026-10-2x, 7b §2, design §21)
+  and 7c's Q2 ("a facet throwing while evaluated fails its host's whole step"). Why all or nothing was chosen: per plugin
+  was decided first and p2's plugin reviewers found counter-traces (a dropped argument field written into a transcript; a
+  copied Durable document written by two versions; a provider's failed factory leaving the harness hanging; mixed copied
+  code and registries); v2 has since closed them (closed argument schemas for every caller, Q12, Q15; version binding
+  with waiting, 7a; ownership of documents; registry versions with `accepts`, Q8; copied cross-plugin files limited to
+  contracts without dependencies, 7c). Rules: (1) **at startup** a plugin whose build, evaluation or setup fails is left
+  out; `load` resolves with a report `{ failed: [{ plugin, error }] }` and never closes the host for it (the core facet
+  included: base code decides whether that is fatal); its consumers wait `failed { waiting }` as for any missing plugin.
+  (2) **At reload** a plugin whose new code fails (build, evaluation, setup, a factory in staging, a declaration error,
+  `checkAccepts`) keeps its old code (its loaded facet, unchanged), and every other plugin of the reload applies; the
+  report lists it (`kept: [{ plugin, error }]`); staging retries without it. (3) **The closure rule** (Opus): after
+  staging, a changed plugin whose recorded requests would not bind because the plugin they need was kept old or left
+  out is kept old too, so a consumer edited together with a broken provider keeps working on its old code. (4) What no
+  rule detects: a consumer relying on new behaviour of a kept provider whose contract (version, fingerprint) did not
+  change: the same risk as a rollout across hosts, documented. (5) `rollout` keeps a plugin dirty while it was kept old
+  on any host. Built with slice 7c (the kernel's `load` and `reload` change with it).
+- **Slice 7c's points (owner, 2026-10-30; `slice-7c.md` §5):** (1) esbuild is an optional peer dependency of Chord,
+  imported only by the plugins component. (2) **No dev/prod split** (owner: "chord apps are supposed to not have a
+  prod/dev split. they are supposed to be self modifying applications"): watching, rebuilding and rolling out are core
+  machinery; one component `chord/next/plugins` (discovery, build, evaluation, `pluginFile`, the watcher, `rollout`) in
+  `src/next-node/plugins/`, exported with v2's entry point; it turns V8's compilation cache off when created; reloads
+  stay explicit (the watcher marks, never applies). Supersedes the separate `loader` and `dev` subpaths of "Slice 7b's
+  open points" (5), (6). (3) `installDependencies(plugin, ctx)` as coding-agent installs package dependencies (`npm
+  install --omit=dev --legacy-peer-deps --ignore-scripts --no-audit --no-fund` in the plugin's real directory, the
+  command overridable). (4) Cross-plugin imports: any file of a discovered plugin, copied, documented as contracts and
+  side-effect-free modules only, listed by the build, no static check yet. (5) `pluginFile` answered per facet by the
+  `require` evaluation passes.
 - **A plugin's npm dependencies are bundled; external only by opt-in (owner, 2026-10-29: "explicit opt in + (a)"):**
   a plugin's `dependencies` are installed into its own `node_modules` (`npm install --ignore-scripts`) and bundled into
   each facet that imports them (host packages, its `peerDependencies`, stay external and are passed in). On Node a
@@ -2395,7 +2424,7 @@ From `research/chord-on-durable-objects.md`, adopted for the Chord v2 kernel bec
 
 - **Per host:** load (bundle; a load error rejects) → staging (run the facet setup and every live object's new factory
   with a recording `self`, declarations only, nothing activated; a throw rejects) → commit (atomic) → after.
-- **Rollback is all-or-nothing per host:** any load or staging error leaves the host entirely on its previous code.
+- ~~**Rollback is all-or-nothing per host:**~~ (**superseded** by "Per plugin at startup and reload", 2026-10-30) any load or staging error leaves the host entirely on its previous code.
   A host is completely at revision R or R−1, so status per host suffices.
 - **Pure objects** (**superseded in part** by R15 (old code touching a document migrated past its version throws)) (no `self.open`, old or new) are swapped in place: new methods and derives; documents, references
   and jobs stay; routines restart serialized; new references become live; then the object's gate opens. Running calls
