@@ -232,7 +232,7 @@ parent link closes. `resolve` returns the link before the worker has loaded (the
 | --- | --- |
 | `createHost<P>({ address?, principal?, ...options })` | with an address: addressable, serves only objects placed there, acts as `principal` on its own host; without: a client. `P` is the app's principal type |
 | `load([{ name, facet }], context)` | facets with their plugin names (the plugin's `package.json` name, npm style; duplicates and invalid names are refused); runs every facet's setup, publishes all of them in one batch (types and registries served, registries composed once, contributions; requests waiting for the publication are placed after it), then waits for the start barrier (section 21: the first outcomes of its host-lifetime objects, slice 7a); a plugin whose setup throws is left out and reported (`load` resolves with `{ failed: [{ plugin, error }] }`, decision "Per plugin at startup and reload"); runs once. Loaders are adapters; base code passes its core facet the same way |
-| `reload([{ name, facet }], context)` | the complete new plugin set after `load` (a facet passed as the same object is an unchanged plugin): staging, then one commit, then every object of a changed or removed plugin takes its fate; resolves with a report (a plugin whose new code fails keeps its old code, listed as `kept`); one at a time (section 21, slice 7b) |
+| `reload([{ name, facet }], context)` | the complete new plugin set after `load` (a facet passed as the same object is an unchanged plugin): staging, then one commit, then every object of a changed or removed plugin takes its fate; resolves with a report (a plugin whose new code fails keeps its old code, listed in `failed`); one at a time (section 21, slice 7b) |
 | `connect(link, { principal, trusted?, codec? }, context)` | the link to the parent, at most one open; once it closed (a drop), `connect` takes the next, and every remote reference over the parent is held again on it. `principal` = who the parent is |
 | `accept(link, { principal, trusted?, codec? }, context)` | a link from a child; holds and calls on it act as `principal` |
 | `route(Kind, { authorize, resolve }, context)` | how to reach hosts of a kind (below); called before `load`, once per kind; work arriving on its links runs under `context` |
@@ -1811,7 +1811,7 @@ changed (Chord compares no code); one passed as the very same facet object is un
 2026-10-29: base code passes its core facet value every time); one loaded and not in it is removed. It resolves with a
 report once the commit happened and every object took its fate (swaps and retries had their first dependency check;
 it does not wait for objects to go live); a plugin whose new code fails keeps its old code and is listed in the
-report's `kept` (per plugin, below).
+report's `failed` (per plugin, below).
 Reloads run one after another per host; before `load` resolved it throws, after `close` it rejects `released/closed`;
 `context` bounds it (decision 4: no install watchdog): its abort before the commit rejects `aborted` and changes
 nothing, after the commit it only ends the wait.
@@ -1819,7 +1819,7 @@ nothing, after the commit it only ends the wait.
 ```ts
 type ReloadReport = {
   readonly plugins: { readonly added: readonly string[]; readonly changed: readonly string[]; readonly removed: readonly string[] };
-  readonly kept: readonly { readonly plugin: string; readonly error: unknown }[];   // new code failed: old code kept (per plugin)
+  readonly failed: readonly { readonly plugin: string; readonly error: unknown }[];   // new code failed: old code kept, an added one left out
   readonly objects: readonly ({ readonly object: string } & (
     | { readonly kind: "swapped" } | { readonly kind: "restarted" } | { readonly kind: "ended" }
     | { readonly kind: "parked"; readonly cause: FailureCause } | { readonly kind: "retried" }))[];
@@ -1838,7 +1838,7 @@ type ReloadReport = {
   rollback per host): a plugin whose new code fails at a reload (its build or evaluation, a setup's or factory's throw
   in staging, a declaration error, `checkAccepts`, a type or registry served twice, a remote type on a host without
   principal or address) keeps its old code (its loaded facet, unchanged) and is reported in the reload's report
-  (`kept: [{ plugin, error }]`); staging runs again without it, and every other plugin of the reload applies. **The
+  (`failed: [{ plugin, error }]`, the same list `load`'s report has; an added plugin that fails is left out); staging runs again without it, and every other plugin of the reload applies. **The
   closure rule:** a changed plugin whose recorded requests would not bind because the plugin they need was kept old (or
   is missing) is kept old too, so a consumer edited together with a broken provider keeps working on its old code. At
   startup the same holds: `load` leaves a failing plugin out and resolves with `{ failed: [{ plugin, error }] }`; its
@@ -1949,7 +1949,7 @@ type ReloadReport = {
   calling facet's own plugin. A plugin's dependencies are installed into its directory (`installDependencies`, as
   coding-agent does: `--omit=dev --legacy-peer-deps --ignore-scripts`). esbuild is an optional peer dependency.
 - **The reload loop:** a watcher marks plugins dirty from the files each facet used (a copied contract dirties every
-  user) and flags changes of base code (the app restarts its hosts); a build is all or nothing; `rollout` runs the app's
+  user) and flags changes of base code (the app restarts its hosts); a build is per plugin (a failed one keeps its old code); `rollout` runs the app's
   steps in order (server, workers, clients; decision "Slice 7b's open points" (3)). A reload control (a button, a CLI,
   an agent tool) is the app's. One base bundle per surface (host packages and the app runtime) is an app's startup
   optimization, the web's in slice 11.

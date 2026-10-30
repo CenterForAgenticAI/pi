@@ -103,7 +103,7 @@ Decision "Per plugin at startup and reload" changes `host.load` and `host.reload
   the recording `self`, a declaration error, `checkAccepts`) keeps its loaded facet (as if passed unchanged), and
   staging runs again without its new code. **The closure rule:** a changed plugin whose recorded requests (staging
   records them with their contract versions) would not bind because the plugin they need was kept old, or is missing,
-  is kept old too (repeat until stable). The report gains `kept: [{ plugin, error }]`; the commit applies the rest.
+  is kept old too (repeat until stable). The report gains `failed: [{ plugin, error }]` (the same list as `load`'s; an added plugin that fails is left out); the commit applies the rest.
 - **The component** builds and evaluates per plugin: a plugin whose build fails or whose evaluation throws is passed to
   the host as its loaded facet (kept) at a reload, left out at startup, and reported with the host's report.
   `plugins.load(host, ctx)` and `plugins.reload(host, names, ctx)` keep, per host, the facet loaded for every plugin, so
@@ -148,7 +148,7 @@ of cross-plugin imports beyond §2's rule.
   imports of ESM and CommonJS host packages; `pluginFile` and its `..` refusal; an import-time throw; a non-facet
   export); `mapStack` naming plugin files and lines; per plugin at startup and reload (§4: a failing setup, factory,
   declaration, build, evaluation; the closure rule with a provider and consumer changed together; the report's `failed`
-  and `kept`; `load` never closing the host); the watcher (dirty marks from inputs and directories, `install`, `set`,
+  and `failed`; `load` never closing the host); the watcher (dirty marks from inputs and directories, `install`, `set`,
   `base`, a change during a build, `node_modules` ignored); `rollout` (order, stopping at a rejecting step, marks).
 - **GC:** 200 reloads of an evaluated plugin facet: old closures collected, heap flat after warm-up.
 - **End to end:** a server and a worker (memory links) loading plugin directories, a plugin edited on disk, built and

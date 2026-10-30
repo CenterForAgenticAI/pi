@@ -1850,7 +1850,7 @@ validation and copies the v2 kernel added around Delta.
   included: base code decides whether that is fatal); its consumers wait `failed { waiting }` as for any missing plugin.
   (2) **At reload** a plugin whose new code fails (build, evaluation, setup, a factory in staging, a declaration error,
   `checkAccepts`) keeps its old code (its loaded facet, unchanged), and every other plugin of the reload applies; the
-  report lists it (`kept: [{ plugin, error }]`); staging retries without it. (3) **The closure rule** (Opus): after
+  report lists it (`failed: [{ plugin, error }]`, as `load`'s; an added plugin that fails is left out); staging retries without it. (3) **The closure rule** (Opus): after
   staging, a changed plugin whose recorded requests would not bind because the plugin they need was kept old or left
   out is kept old too, so a consumer edited together with a broken provider keeps working on its old code. (4) What no
   rule detects: a consumer relying on new behaviour of a kept provider whose contract (version, fingerprint) did not
