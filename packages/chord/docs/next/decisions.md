@@ -2004,6 +2004,53 @@ validation and copies the v2 kernel added around Delta.
   `chord.external` refused); the names keep those imports external. The module objects are given where scripts are
   evaluated: the server's own at `plugins.load(host, { kind, core, modules })`, a worker's in `workerMain`'s
   `hostPackages`, a page's in `startPage`.
+- **Slice 10 build: plugin sockets get a heartbeat (owner, 2026-10-30: "does it make sense? then yes"):** the HTTP
+  component pings every plugin socket with WebSocket ping frames after 15 s of silence and terminates one silent for
+  30 s (the link heartbeat's numbers); browsers and `ws` answer pings by themselves, so plugin code is unchanged. A dead
+  peer (a phone that vanished) no longer keeps a plugin's resources (a terminal view) until TCP gives up.
+- **Origins only from relays (owner, 2026-10-31: "why would child links carry origin? the server keeps track of origin
+  per connection and relays that to workers"; slice 10 security audit, Opus K1/K2, a hole since slice 4a):** `origin`
+  is read only on parent and route links (where a relay's messages arrive); on a child link (a tab, a TUI) a message
+  carrying `origin` is a protocol error that closes the link; the server numbers each child connection itself, as it
+  does. Every link drops a per-origin record once it has no holds, no calls and nothing in flight (origins are never
+  reused). Was: honoured on every link, so a tab could invent origins, each with its own call window (5,120 concurrent
+  calls from one guest socket) and a record kept until the socket closed (about 1 KiB each). Supersedes design §3's
+  "`origin` is honoured on every link". Fixed in slice 10's fix round.
+- **Slice 10 fix round, worker errors in public (owner, 2026-10-31: "a"; refines R5):** two levels. Public (`workers.state`
+  and the holders' `failed { waiting }`): a `fatal` as the child's `redact` made it; a start error or a crash as a fixed
+  message with a code (`"worker failed to start"`, `"worker exited (SIGSEGV)"`); no stderr in `state`. Private: the full
+  error and the stderr tail go only to the server's `onError` (`worker_failed { address, error, stderrTail }`), the app's
+  logs to redact. Was: `state.stderrTail` and the raw start error, which leaked secrets to guests (security audit, Astra,
+  Opus H3).
+- **Slice 10 fix round, allowed hosts only through contributions (owner, 2026-10-31: "a, and we close everything that's
+  been removed"; refines R4):** the server option `allowedHosts` goes; the app contributes its hosts like any plugin
+  (fixed ones from its core facet, changing ones from a host-lifetime object's writable). Whatever is removed is closed
+  at once: when a host leaves the allowed set, or a plugin's contribution (its sockets) leaves the table, every link and
+  socket that came through it is terminated immediately (no graceful close the peer could ignore, Astra A1), its scope
+  sealed; an upgrade still authenticating is checked again against the current set and router before it is handed out
+  (Astra A2).
+- **The HTTP component's security baseline (owner, 2026-10-31: "this mechanism should come out of the box in http/app kit;
+  basically encode all the best practices so users never have to think about it again"; "yes"; p2's rules from
+  `hosts/principals.ts`, `hosts/server.ts`, `loopback-cookie.ts`, devices, sharing):** on by default in
+  `chord/next/http`. (1) Provenance: local only when the socket's local address is loopback, `Host` is a loopback
+  form with the port, and no `Forwarded`/`X-Forwarded-*` header; otherwise only an allowed host (https); else 403;
+  duplicate `Host` and absolute-form targets 403; `request.provenance` `{ kind: "local" } | { kind: "remote", host }`.
+  (2) Foreign requests (Fetch Metadata: `Sec-Fetch-Site` `cross-site`/`same-site`, or a frame another site embeds)
+  never reach `authenticate`: they run anonymous, except a top-level navigation (`GET`, `navigate`) to a route marked
+  `page: true`. (3) A foreign `Origin` is 403 on every request and upgrade; unsafe methods from a browser need `Origin`
+  equal to the app's; a route may opt out (`crossSite: true`, a webhook), then it always runs anonymous. (4) Default
+  headers on every response, the component's own included: `Cache-Control: no-store`, `nosniff`,
+  `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, a CSP with a per-server script nonce (`default-src 'none'`,
+  scripts `'self'` and the nonce, `connect-src` self and its WebSocket, `frame-ancestors 'none'` or the contributed
+  `framers`); a route widens its own CSP through its response headers. (5) `cookie(name, value, options)`: `HttpOnly`,
+  `Path=/`, `SameSite=Strict` (or `Lax`), `Secure` on a remote origin, signed with a given secret. (6) `bytes` and
+  `fileResponse` refuse foreign requests, are `attachment` unless the route says inline, and inline ones get a
+  `sandbox` CSP. The app decides only who someone is, which routes are pages, its extra CSP sources and its framers.
+  Replaces the CSRF question of the security audit; extends R4.
+  Relays (owner: "sure"): a contribution may declare `relays: [{ name, verify(request) => { origin, framer } |
+  undefined }]`; admission calls them for a request that would be refused for forwarded headers on loopback (p2's
+  Radius relay); a verified one gets `provenance: { kind: "relayed", relay, origin }` and its framer allowed for it,
+  an unverified one stays refused; `authenticate` decides its principal.
 - **A plugin's npm dependencies are bundled; external only by opt-in (owner, 2026-10-29: "explicit opt in + (a)"):**
   a plugin's `dependencies` are installed into its own `node_modules` (`npm install --ignore-scripts`) and bundled into
   each facet that imports them (host packages, its `peerDependencies`, stay external and are passed in). On Node a

@@ -391,8 +391,10 @@ drops, folds or resets.
 - **Origins:** the relay gives each downstream origin (a downstream link, and the origin its messages carry when that
   link is itself a relay's) a number, one counter per host, never reused; 0 is a host's own work. Every message
   upstream for that origin carries `origin`; the provider keys holds, calls, windows and acks by (link, origin, id), and
-  its answers carry the origin back. `origin` is honoured on every link (a worker may relay a child's hold to its
-  parent); principals and incarnations stay parent-only.
+  its answers carry the origin back. `origin` is read only on parent and route links, where a relay's messages
+  arrive (a worker may relay a child's hold to its parent); on a child link it is a protocol error (decision "Origins
+  only from relays", 2026-10-31); a per-origin record goes once it has no holds, calls or messages in flight;
+  principals and incarnations stay parent-only.
 - **Ids are not renumbered:** an upstream hold has the downstream hold's id under the origin's number; calls the same.
   Two tabs (two holds) of one principal are two upstream holds, each with its own encoders (R1).
 - **Nothing is parsed:** the relay routes by the hold's address and authorizes it; params, arguments, results,
