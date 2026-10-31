@@ -2051,6 +2051,18 @@ validation and copies the v2 kernel added around Delta.
   undefined }]`; admission calls them for a request that would be refused for forwarded headers on loopback (p2's
   Radius relay); a verified one gets `provenance: { kind: "relayed", relay, origin }` and its framer allowed for it,
   an unverified one stays refused; `authenticate` decides its principal.
+- **The HTTP server is a native object (owner, 2026-10-31: "still unconvinced the server can't be a native object; it's a
+  singleton, unlikely to change"; supersedes D3 and the `httpServer` function of D1):** `chord.http`'s facet serves the
+  registry `Http` and a host-lifetime object whose native is the listener; its configuration (`HttpConfig`: port,
+  links path) and `Authenticators` are registries the app (or the app kit) contributes to. The facet is passed as the
+  same object at every reload, so the listener never closes before the process ends. The port opens right after
+  `load`'s publication (a few hundred milliseconds later than listening before `load`; a reconnecting tab retries).
+- **The app kit is opinionated (owner, 2026-10-31: "the app kit should be super duper opinionated and make for small
+  app code"; "i suppose"):** after slice 10's fix round and before slice 11, a design pass on `chord/next/app`: one
+  entry (`startApp`, `startWorker`), conventions for layout, hosts, principals, authentication, storage, plugins, web
+  and TUI, decided point by point; the slice 10 components are its inside. Inputs from the owner: user management is
+  part of it ("user management will also need to be a thing we support"), and app shapes without workers (server and
+  clients only: "a chat app doesn't need workers").
 - **A plugin's npm dependencies are bundled; external only by opt-in (owner, 2026-10-29: "explicit opt in + (a)"):**
   a plugin's `dependencies` are installed into its own `node_modules` (`npm install --ignore-scripts`) and bundled into
   each facet that imports them (host packages, its `peerDependencies`, stay external and are passed in). On Node a
