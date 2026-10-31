@@ -2079,6 +2079,11 @@ validation and copies the v2 kernel added around Delta.
   (`hono.all("/*", (c) => http.fetch(c.req.raw))`, an Express adapter) and passes upgrades to the adapter. The same
   routes then run on other runtimes later (Bun, Durable Objects, design §26 #16). Built in slice 10's fix round
   (reworks `server.ts`, `request.ts`, `response.ts`; router, admission rules and descriptions stay).
+- **Slice 10 fix round, three small points (owner, 2026-10-31: "yes on fileResponse etc"):** (1) `fileResponse(path, {
+  root? })`: with a `root`, a file whose real path lies outside it (a symlink out) is refused 403; without one the path
+  is trusted (a plugin's own file). (2) The worker lock on macOS and the BSDs fails closed on a stale lock file, with an
+  error naming it (no takeover; Linux and Android use abstract sockets and are unaffected). (3) A route's overhead:
+  Opus's two trims, measured again after the `fetch` rework, and the numbers brought to the owner.
 - **A plugin's npm dependencies are bundled; external only by opt-in (owner, 2026-10-29: "explicit opt in + (a)"):**
   a plugin's `dependencies` are installed into its own `node_modules` (`npm install --ignore-scripts`) and bundled into
   each facet that imports them (host packages, its `peerDependencies`, stay external and are passed in). On Node a
