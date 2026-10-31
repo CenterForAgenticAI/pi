@@ -19,6 +19,7 @@
 
 ### Fixed
 
+- Updated glob matching to prevent denial of service from amplified glob patterns.
 - Fixed a saved "Do not trust" decision being ignored for projects without trust-requiring resources, for example a folder with only `AGENTS.md`. pi auto-trusted such projects, so `ctx.isProjectTrusted()` returned true and package commands treated them as trusted. A saved decision in `trust.json` now takes precedence; auto-trust applies only when no decision is saved ([#10947](https://github.com/earendil-works/pi/issues/10947))
 - Fixed `Shift+Enter` queueing a follow-up instead of inserting a newline in Apple Terminal setups that send `ESC` + Return. pi now checks the local Shift key state for that sequence, as it already did for plain Return; `Alt+Enter` without Shift still queues a follow-up ([#11559](https://github.com/earendil-works/pi/issues/11559))
 - Fixed the working status (OSC 7501) disappearing in Rex and iTerm2 during runs in regular TUI mode. Rendered messages wrote OSC 133 prompt markers to the terminal, which the terminal treats as a new shell prompt; regular mode no longer writes them ([#11519](https://github.com/earendil-works/pi/issues/11519))
@@ -47,6 +48,10 @@
 - Fixed the external editor failing silently, for example when the editor command is wrong or a Windows editor cannot start from a deep WSL directory. pi now shows a status message such as `External editor exited with code 1; prompt unchanged` ([#11592](https://github.com/earendil-works/pi/issues/11592))
 - Fixed `tool_search` and codemode `searchTools()` ranking a tool below tools that only mention its name in their descriptions, for example `peekaboo app` ranking `mcp__peekaboo__app` 14th. A tool matching more of the query's words now ranks above one matching fewer, a query word in a tool's name scores more than any number of mentions in its description, a tool whose whole name is in the query gets a large bonus, and long server instructions no longer lower the scores of that server's tools ([#11331](https://github.com/earendil-works/pi/issues/11331))
 - Fixed `tool_search` and codemode `searchTools()` finding nothing for Chinese, Japanese, Thai, and other non-ASCII queries, because the tokenizer kept only ASCII letters and digits. Words in any script now match, text without spaces between words such as `搜索记录` is split into words, and canonically equivalent text such as `café` and `cafe\u0301` matches ([#10816](https://github.com/earendil-works/pi/issues/10816), [#11037](https://github.com/earendil-works/pi/pull/11037) by [@haoqixu](https://github.com/haoqixu))
+
+### Removed
+
+- Removed the native OS `sandbox/` extension example and its dependency. Use the [Gondolin example](examples/extensions/gondolin/) or the [containerization guide](docs/containerization.md).
 
 ## [1.4.0] - 2026-10-21
 

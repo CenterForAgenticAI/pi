@@ -67,7 +67,7 @@
 		"src/delta/README.md"
 	],
 	"scripts": {
-		"clean": "shx rm -rf dist",
+		"clean": "node ../../scripts/package-files.mjs clean dist",
 		"build": "tsc -p tsconfig.build.json",
 		"test": "vitest --run",
 		"prepublishOnly": "npm run clean && npm run build"
@@ -103,7 +103,6 @@
 	},
 	"devDependencies": {
 		"@types/ws": "8.18.2",
-		"shx": "0.3.4",
 		"vitest": "4.1.12",
 		"ws": "8.21.0"
 	}
