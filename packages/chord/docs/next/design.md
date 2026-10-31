@@ -1961,7 +1961,7 @@ type ReloadReport = {
   duplicate name). Dependencies between plugins resolve by contract name at runtime; names are prefixed
   (`<plugin>.<name>`; tools `<plugin>_<name>`).
 - **Loader D:** one esbuild script per facet (its own files, copied files of other plugins, its npm `dependencies`
-  inlined; host packages, `chord.external` packages and Node builtins external, passed in at evaluation); evaluated with
+  inlined; host packages, `chord.external` packages and Node builtins external, passed in at evaluation); each facet kind is defined once, `kinds: { <kind>: { platform: "node" | "browser", hostPackages } }` (slice 11); evaluated with
   `vm.Script` under a stable filename per (plugin, kind, digest); no module map: old generations are reclaimed by the
   GC; V8's compilation cache turned off when the component is created. `pluginFile(path)` resolves a file of the
   calling facet's own plugin. A plugin's dependencies are installed into its directory (`installDependencies`, as

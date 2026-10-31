@@ -260,7 +260,7 @@ await workerMain(async ({ address, start, parent, plugins, onClose }, ctx) => {
 Workers never build. The plugins component (7c) gets `scripts(kind, ctx)`: the complete current set of one kind (every
 discovered plugin's facet of it, built on first use, then updated by every rollout that ships that kind), each with its
 plugin record (`name`, `dir`, `chord.external`). The component's per-host loading (its loaded map, `#prepare`, `adopt`,
-the queue per host) moves into a file without esbuild or the watcher, `createPluginRuntime({ hostPackages, onError })`
+the queue per host) moves into a file without esbuild or the watcher, `createPluginRuntime({ hostPackages })`
 with `load(host, { kind, core, scripts }, ctx)` and `reload(host, scripts, ctx)` (a complete set: removed = loaded −
 shipped; same digests unchanged); `createPlugins` uses it, and the child's `plugins` is one (`import` of
 `chord/next/plugins/runtime` loads no esbuild).

@@ -1988,6 +1988,22 @@ validation and copies the v2 kernel added around Delta.
   entry lives as long as its contributor and consumers keep nothing beyond a use) A plugin socket is closed (1012,
   "service restart") when the contribution that handed it out leaves the table (a reload changing or removing it); a
   `/chord` link or socket whose `Host` is no longer allowed closes (1008) when the allowed hosts change.
+- **Slice 11's points (owner, 2026-10-30; `slice-11.md`):** the surfaces are generic plumbing; the app keeps
+  everything visible (owner: "this one needs to be generic, so apps can do whatever they want, css, tui components,
+  themes"). (P1, "a") `chord/next/web` ships serving the surface (the base bundle, the plugins' web scripts,
+  stylesheets and assets, the page through the app's template, all as `Http` contributions), the browser's client host
+  with its connection loop, and loading and applying the plugins' web facets; not HTML, CSS, components, themes,
+  navigation, slots or layout.
+  (P2, "script tag") A plugin's web script is served as a file that registers itself
+  (`chordFacet("<plugin>", "<digest>", function (require, module, exports) { … })`) and is loaded with `<script src>`
+  under a `'self'` CSP: no `eval`, no `new Function`.
+  (Kinds, owner: "ya"; changes 7c's `createPlugins` options, built in slice 10) One definition per facet kind:
+  `kinds: { server: { platform: "node", hostPackages: [...names] }, web: { platform: "browser", hostPackages: [...] } }`
+  replaces `kinds` plus `browserKinds` and the component-wide `hostPackages` map. The platform decides the build (Node:
+  builtins and `chord.external` external, no CSS or `?url` assets; browser: CSS and assets collected, builtins and
+  `chord.external` refused); the names keep those imports external. The module objects are given where scripts are
+  evaluated: the server's own at `plugins.load(host, { kind, core, modules })`, a worker's in `workerMain`'s
+  `hostPackages`, a page's in `startPage`.
 - **A plugin's npm dependencies are bundled; external only by opt-in (owner, 2026-10-29: "explicit opt in + (a)"):**
   a plugin's `dependencies` are installed into its own `node_modules` (`npm install --ignore-scripts`) and bundled into
   each facet that imports them (host packages, its `peerDependencies`, stay external and are passed in). On Node a
