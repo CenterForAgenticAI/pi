@@ -174,18 +174,20 @@ extension point: one plugin defines it, others contribute. A <strong>rollout</st
 <p class="dropcap">Start without plugins. One host, one object that keeps notes:</p>
 <pre><code><span class="tk-k">import</span> { createHost, defineFacet, defineState, local, method, obj, arr, str } <span class="tk-k">from</span> <span class="tk-s">"@earendil-works/chord/next"</span>;
 
-<span class="tk-c">// the contract: what a Notes object looks like from outside</span>
+<span class="tk-k">const</span> <span class="tk-t">NoteList</span> = <span class="tk-f">obj</span>({ items: <span class="tk-f">arr</span>(<span class="tk-f">str</span>()) });          <span class="tk-c">// one schema, used by the contract and the document</span>
+
+<span class="tk-c">// the contract: what a Notes object offers</span>
 <span class="tk-k">const</span> <span class="tk-t">Notes</span> = <span class="tk-f">local</span>(<span class="tk-s">"notes.store"</span>, {
 	version: <span class="tk-n">1</span>,
 	params: {},                                        <span class="tk-c">// one object per host: no params</span>
 	members: {
-		list: <span class="tk-f">obj</span>({ items: <span class="tk-f">arr</span>(<span class="tk-f">str</span>()) }),             <span class="tk-c">// state anyone can read and watch</span>
+		list: <span class="tk-t">NoteList</span>,                               <span class="tk-c">// state anyone can read and watch</span>
 		add: <span class="tk-f">method</span>(<span class="tk-f">obj</span>({ text: <span class="tk-f">str</span>() })),            <span class="tk-c">// a method: arguments checked by Chord</span>
 	},
 });
 
-<span class="tk-c">// the document the object keeps</span>
-<span class="tk-k">const</span> <span class="tk-t">NotesDoc</span> = <span class="tk-f">defineState</span>(<span class="tk-s">"notes"</span>, { schema: <span class="tk-f">obj</span>({ items: <span class="tk-f">arr</span>(<span class="tk-f">str</span>()) }), version: <span class="tk-n">1</span>, initial: () =&gt; ({ items: [] }) });
+<span class="tk-c">// the document the object stores (its own version: storage can change without changing the contract)</span>
+<span class="tk-k">const</span> <span class="tk-t">NotesDoc</span> = <span class="tk-f">defineState</span>(<span class="tk-s">"notes"</span>, { schema: <span class="tk-t">NoteList</span>, version: <span class="tk-n">1</span>, initial: () =&gt; ({ items: [] }) });
 
 <span class="tk-c">// the facet: which types this host serves, and how to make each object</span>
 <span class="tk-k">const</span> facet = <span class="tk-f">defineFacet</span>((host) =&gt; {
@@ -203,7 +205,11 @@ extension point: one plugin defines it, others contribute. A <strong>rollout</st
 <span class="tk-k">const</span> notes = <span class="tk-k">await</span> server.<span class="tk-f">get</span>(<span class="tk-t">Notes</span>, {}, ctx);        <span class="tk-c">// a reference: live, with its state</span>
 <span class="tk-k">await</span> notes.<span class="tk-f">add</span>({ text: <span class="tk-s">"buy milk"</span> }, ctx);
 console.<span class="tk-f">log</span>(notes.list.value);                          <span class="tk-c">// { items: ["buy milk"] }</span></code></pre>
-<p>Four things happened. The <strong>contract</strong> <code>Notes</code> says what the object offers. The <strong>facet</strong> says this host serves
+<p>Four things happened. The <strong>contract</strong> <code>Notes</code> says what the object offers; the <strong>document</strong> says what it stores.
+Here they have the same shape, so one schema serves both; they are separate because they change separately (a
+derive or a guest&#39;s redacted view offers something other than storage, and storage can migrate without users
+noticing).
+The <strong>facet</strong> says this host serves
 <code>Notes</code>, with a <strong>factory</strong> that declares the object&#39;s parts: a document, and a method writing it in a transaction.
 <code>load</code> publishes the facet. <code>get</code> returns a <strong>reference</strong> once the object is live; its members are the contract&#39;s.</p>
 <p>The factory only declares: it is synchronous and opens nothing. Chord activates the object (loads its documents, opens
@@ -220,7 +226,7 @@ lives on its project&#39;s worker:</p>
 	version: <span class="tk-n">1</span>,
 	params: { project: <span class="tk-f">str</span>() },
 	hostAddress: ({ project }) =&gt; <span class="tk-t">Project</span>({ id: project }),   <span class="tk-c">// where an object of these params lives</span>
-	variants: { editor: { state: { list: <span class="tk-t">NotesSchema</span> }, methods: { add: <span class="tk-f">method</span>(<span class="tk-t">AddArgs</span>) } } },
+	variants: { editor: { state: { list: <span class="tk-t">NoteList</span> }, methods: { add: <span class="tk-f">method</span>(<span class="tk-f">obj</span>({ text: <span class="tk-f">str</span>() })) } } },
 });</code></pre>
 <p><code>hostAddress</code> is the whole routing story. A tab asks for <code>Notes { project: &quot;p1&quot; }</code>. Its host computes the address,
 <code>Project(p1)</code>, and sends the request to its parent, the server. The server has a <strong>route</strong> for <code>Project</code>: it starts (or

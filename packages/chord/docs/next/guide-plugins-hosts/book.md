@@ -84,18 +84,20 @@ Start without plugins. One host, one object that keeps notes:
 ```ts
 import { createHost, defineFacet, defineState, local, method, obj, arr, str } from "@earendil-works/chord/next";
 
-// the contract: what a Notes object looks like from outside
+const NoteList = obj({ items: arr(str()) });          // one schema, used by the contract and the document
+
+// the contract: what a Notes object offers
 const Notes = local("notes.store", {
 	version: 1,
 	params: {},                                        // one object per host: no params
 	members: {
-		list: obj({ items: arr(str()) }),             // state anyone can read and watch
+		list: NoteList,                               // state anyone can read and watch
 		add: method(obj({ text: str() })),            // a method: arguments checked by Chord
 	},
 });
 
-// the document the object keeps
-const NotesDoc = defineState("notes", { schema: obj({ items: arr(str()) }), version: 1, initial: () => ({ items: [] }) });
+// the document the object stores (its own version: storage can change without changing the contract)
+const NotesDoc = defineState("notes", { schema: NoteList, version: 1, initial: () => ({ items: [] }) });
 
 // the facet: which types this host serves, and how to make each object
 const facet = defineFacet((host) => {
@@ -115,7 +117,11 @@ await notes.add({ text: "buy milk" }, ctx);
 console.log(notes.list.value);                          // { items: ["buy milk"] }
 ```
 
-Four things happened. The **contract** `Notes` says what the object offers. The **facet** says this host serves
+Four things happened. The **contract** `Notes` says what the object offers; the **document** says what it stores.
+Here they have the same shape, so one schema serves both; they are separate because they change separately (a
+derive or a guest's redacted view offers something other than storage, and storage can migrate without users
+noticing).
+The **facet** says this host serves
 `Notes`, with a **factory** that declares the object's parts: a document, and a method writing it in a transaction.
 `load` publishes the facet. `get` returns a **reference** once the object is live; its members are the contract's.
 
@@ -135,7 +141,7 @@ export const Notes = remote("notes", {
 	version: 1,
 	params: { project: str() },
 	hostAddress: ({ project }) => Project({ id: project }),   // where an object of these params lives
-	variants: { editor: { state: { list: NotesSchema }, methods: { add: method(AddArgs) } } },
+	variants: { editor: { state: { list: NoteList }, methods: { add: method(obj({ text: str() })) } } },
 });
 ```
 
