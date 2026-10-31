@@ -465,18 +465,16 @@ evaluates them with its own modules (a worker&#39;s from <code>workerMain</code>
 <section class="chapter" id="together"><header class="opener"><div class="numeral">VII</div><h2>Plugins Using Plugins</h2><p class="lede">Two ways one plugin uses another, and the one it may not.</p></header>
 <p class="dropcap">A search plugin wants to search the notes. It <strong>imports the contract</strong> and asks for the object:</p>
 <pre><code><span class="tk-c">// plugins/search/worker.ts</span>
-<span class="tk-k">import</span> { <span class="tk-t">Notes</span> } <span class="tk-k">from</span> <span class="tk-s">"../notes/contract.ts"</span>;   <span class="tk-c">// copied into search's script: contracts only</span>
+<span class="tk-k">import</span> { <span class="tk-t">Notes</span> } <span class="tk-k">from</span> <span class="tk-s">"@app/notes/contract"</span>;    <span class="tk-c">// another plugin, by its name: copied into search's script</span>
 
 host.<span class="tk-f">serve</span>(<span class="tk-t">Search</span>, ({ project }, principal, self) =&gt; {
 	<span class="tk-k">const</span> notes = self.<span class="tk-f">get</span>(<span class="tk-t">Notes</span>, { project });   <span class="tk-c">// a dependency: Search goes live once Notes is</span>
 	<span class="tk-k">const</span> index = self.<span class="tk-f">derive</span>([notes.list], ([list]) =&gt; <span class="tk-f">buildIndex</span>(list.items));
 	<span class="tk-k">return</span> { variant: <span class="tk-s">"main"</span>, members: { find: <span class="tk-k">async</span> ({ q }) =&gt; <span class="tk-f">lookup</span>(index.value, q) } };
 });</code></pre>
-<div class="note review"><b class="tag">Proposed: importing another plugin by name</b><p>Today another plugin&#39;s file is imported by relative path, which works only when both plugins sit in the same root. A
-plugin in the user&#39;s root cannot reach one the app ships in <code>src/plugins</code> that way. Proposed (not decided): import by
-plugin name, <code>import { Notes } from &quot;@app/notes/contract&quot;</code>, resolved to the discovered plugin of that name wherever its
-directory is.</p>
-</div>
+<p>A plugin imports another plugin by its <strong>name</strong>, never by a path: <code>@app/notes/contract</code> is the file <code>contract.ts</code> of
+whichever discovered plugin is named <code>@app/notes</code>, in any root. The file is copied into the importer&#39;s script, so only
+contracts and other side-effect-free files belong there; a missing plugin is a build error naming it.</p>
 <p><code>self.get</code> in a factory declares a dependency: Chord makes <code>Search</code> live only once <code>Notes</code> is, and if the notes
 plugin is missing, <code>Search</code> waits with a clear reason (&quot;waiting for notes: not served here&quot;) instead of failing.</p>
 <p>The other way is a <strong>registry</strong>: an extension point one plugin defines and others contribute to. The app&#39;s core

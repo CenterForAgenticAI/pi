@@ -490,7 +490,7 @@ A search plugin wants to search the notes. It **imports the contract** and asks 
 
 ```ts
 // plugins/search/worker.ts
-import { Notes } from "../notes/contract.ts";   // copied into search's script: contracts only
+import { Notes } from "@app/notes/contract";    // another plugin, by its name: copied into search's script
 
 host.serve(Search, ({ project }, principal, self) => {
 	const notes = self.get(Notes, { project });   // a dependency: Search goes live once Notes is
@@ -499,12 +499,10 @@ host.serve(Search, ({ project }, principal, self) => {
 });
 ```
 
-:::review | Proposed: importing another plugin by name
-Today another plugin's file is imported by relative path, which works only when both plugins sit in the same root. A
-plugin in the user's root cannot reach one the app ships in `src/plugins` that way. Proposed (not decided): import by
-plugin name, `import { Notes } from "@app/notes/contract"`, resolved to the discovered plugin of that name wherever its
-directory is.
-:::
+
+A plugin imports another plugin by its **name**, never by a path: `@app/notes/contract` is the file `contract.ts` of
+whichever discovered plugin is named `@app/notes`, in any root. The file is copied into the importer's script, so only
+contracts and other side-effect-free files belong there; a missing plugin is a build error naming it.
 
 `self.get` in a factory declares a dependency: Chord makes `Search` live only once `Notes` is, and if the notes
 plugin is missing, `Search` waits with a clear reason ("waiting for notes: not served here") instead of failing.

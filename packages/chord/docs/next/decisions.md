@@ -2063,6 +2063,13 @@ validation and copies the v2 kernel added around Delta.
   and TUI, decided point by point; the slice 10 components are its inside. Inputs from the owner: user management is
   part of it ("user management will also need to be a thing we support"), and app shapes without workers (server and
   clients only: "a chat app doesn't need workers").
+- **Plugins import each other by name (owner, 2026-10-31: "i like it"; changes 7c's cross-plugin rule):**
+  `import { Notes } from "@app/notes/contract"` resolves to the discovered plugin named `@app/notes`, its file
+  `contract.ts`, wherever its directory is (any root), copied into the importer's script as before (contracts and
+  side-effect-free files only; they may import only host packages and files of their own plugin); a missing plugin is
+  a build error naming it; relative paths into another plugin's directory are refused. Owner's notes for the app kit
+  pass: third-party plugins need the imported plugins' sources or types for type checking (publishing each plugin to
+  npm works but is unpleasant); plugins should be testable on their own, with their dependencies mocked.
 - **A plugin's npm dependencies are bundled; external only by opt-in (owner, 2026-10-29: "explicit opt in + (a)"):**
   a plugin's `dependencies` are installed into its own `node_modules` (`npm install --ignore-scripts`) and bundled into
   each facet that imports them (host packages, its `peerDependencies`, stay external and are passed in). On Node a
