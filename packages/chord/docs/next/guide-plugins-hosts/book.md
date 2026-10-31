@@ -75,7 +75,7 @@ addressable hosts; an **address** (`Session({ id: "p1" })`) names one. An **obje
 on its own host only) or `remote` (used from any host). An **object** is one instance of a type, per params. A
 **facet** is a plugin's declarations for one host kind. A **plugin** is a directory with a `package.json`. A
 **reference** is what you get when you ask for an object (`host.get`, `self.get`, `ctx.get`). A **document** is data an object
-stores, changed in **transactions**; a **derive** is a value computed from others; a **native** is an outside
+stores, changed in **transactions**; a **table** holds many records with queries, in the host's **store**; a **derive** is a value computed from others; a **native** is an outside
 resource an object opens and closes. A **registry** is an
 extension point: one plugin defines it, others contribute. A **rollout** applies a build to the hosts in order.
 
@@ -130,7 +130,7 @@ The **facet** says this host serves
 The factory only declares: it is synchronous and opens nothing. Chord activates the object (loads its documents, opens
 what it asked to open) and then serves calls. That is why the same factory can run again when the code changes.
 
-# An Object's Parts {#parts lede="Documents, transactions, computed values, watching, and outside resources: the vocabulary of every factory."}
+# An Object's Parts {#parts lede="Documents, tables, transactions, computed values, watching, and outside resources: the vocabulary of every factory."}
 
 A factory builds an object from a handful of parts, each declared with one call on `self`. The notes object grows to
 show all of them.
@@ -146,6 +146,32 @@ add: async ({ text }, ctx) => self.tx(async (tx) => {
 	draft.items.push(text);                      // recorded as a change, committed when the function returns
 }, ctx),
 ```
+
+Documents live in memory unless they are **persisted**: `defineState(..., { persist: true, checkpointWhen })` keeps
+one in the host's **store** (a SQLite file the app opens and gives to `createHost({ store })`), loaded when the
+object activates. For many records with queries, an object declares a **table**:
+
+```ts
+const NoteRows = defineTable("notes", {
+	version: 1,
+	columns: { id: str(), text: str(), at: int() },
+	key: ["id"],
+	indexes: { by_time: ["at"] },
+});
+
+host.serve(NoteStore, (_params, self) => {               // a local type with empty params: it may persist
+	const rows = self.table(NoteRows);                    // created (or migrated) when the object activates
+	const recent = query(NoteRows).orderBy((n) => n.at, "desc");
+	return {
+		add: async ({ text }, ctx) => self.tx(async (tx) => tx.put(rows, { id: uuid(), text, at: Date.now() }), ctx),
+		page: async ({ after }, ctx) => rows.page(recent, 50, ctx, { after }),   // 50 at a time, with a cursor
+	};
+});
+```
+
+Persisted data lives only in `local` objects with empty params (one per host and type), so its address never depends
+on who asked or with which params; an object with params (a view per project) reads from such a store. Writes go
+through the same transactions as documents: a note row and a document can change in one commit.
 
 A **derive** is a value computed from other values, recomputed whenever they change. It is how an object offers
 something it does not store:

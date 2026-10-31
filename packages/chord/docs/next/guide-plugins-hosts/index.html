@@ -168,7 +168,7 @@ addressable hosts; an <strong>address</strong> (<code>Session({ id: &quot;p1&quo
 on its own host only) or <code>remote</code> (used from any host). An <strong>object</strong> is one instance of a type, per params. A
 <strong>facet</strong> is a plugin&#39;s declarations for one host kind. A <strong>plugin</strong> is a directory with a <code>package.json</code>. A
 <strong>reference</strong> is what you get when you ask for an object (<code>host.get</code>, <code>self.get</code>, <code>ctx.get</code>). A <strong>document</strong> is data an object
-stores, changed in <strong>transactions</strong>; a <strong>derive</strong> is a value computed from others; a <strong>native</strong> is an outside
+stores, changed in <strong>transactions</strong>; a <strong>table</strong> holds many records with queries, in the host&#39;s <strong>store</strong>; a <strong>derive</strong> is a value computed from others; a <strong>native</strong> is an outside
 resource an object opens and closes. A <strong>registry</strong> is an
 extension point: one plugin defines it, others contribute. A <strong>rollout</strong> applies a build to the hosts in order.</p>
 </section>
@@ -219,7 +219,7 @@ The <strong>facet</strong> says this host serves
 what it asked to open) and then serves calls. That is why the same factory can run again when the code changes.</p>
 </section>
 
-<section class="chapter" id="parts"><header class="opener"><div class="numeral">II</div><h2>An Object&#39;s Parts</h2><p class="lede">Documents, transactions, computed values, watching, and outside resources: the vocabulary of every factory.</p></header>
+<section class="chapter" id="parts"><header class="opener"><div class="numeral">II</div><h2>An Object&#39;s Parts</h2><p class="lede">Documents, tables, transactions, computed values, watching, and outside resources: the vocabulary of every factory.</p></header>
 <p class="dropcap">A factory builds an object from a handful of parts, each declared with one call on <code>self</code>. The notes object grows to
 show all of them.</p>
 <p><strong>Documents</strong> hold the object&#39;s data: <code>self.state(NotesDoc)</code> gives a handle whose <code>.value</code> is the current data. Data
@@ -230,6 +230,27 @@ if it throws.</p>
 	<span class="tk-k">const</span> draft = <span class="tk-k">await</span> tx.<span class="tk-f">draft</span>(doc);          <span class="tk-c">// the document's data, writable inside this transaction only</span>
 	draft.items.<span class="tk-f">push</span>(text);                      <span class="tk-c">// recorded as a change, committed when the function returns</span>
 }, ctx),</code></pre>
+<p>Documents live in memory unless they are <strong>persisted</strong>: <code>defineState(..., { persist: true, checkpointWhen })</code> keeps
+one in the host&#39;s <strong>store</strong> (a SQLite file the app opens and gives to <code>createHost({ store })</code>), loaded when the
+object activates. For many records with queries, an object declares a <strong>table</strong>:</p>
+<pre><code><span class="tk-k">const</span> <span class="tk-t">NoteRows</span> = <span class="tk-f">defineTable</span>(<span class="tk-s">"notes"</span>, {
+	version: <span class="tk-n">1</span>,
+	columns: { id: <span class="tk-f">str</span>(), text: <span class="tk-f">str</span>(), at: <span class="tk-f">int</span>() },
+	key: [<span class="tk-s">"id"</span>],
+	indexes: { by_time: [<span class="tk-s">"at"</span>] },
+});
+
+host.<span class="tk-f">serve</span>(<span class="tk-t">NoteStore</span>, (_params, self) =&gt; {               <span class="tk-c">// a local type with empty params: it may persist</span>
+	<span class="tk-k">const</span> rows = self.<span class="tk-f">table</span>(<span class="tk-t">NoteRows</span>);                    <span class="tk-c">// created (or migrated) when the object activates</span>
+	<span class="tk-k">const</span> recent = <span class="tk-f">query</span>(<span class="tk-t">NoteRows</span>).<span class="tk-f">orderBy</span>((n) =&gt; n.at, <span class="tk-s">"desc"</span>);
+	<span class="tk-k">return</span> {
+		add: <span class="tk-k">async</span> ({ text }, ctx) =&gt; self.<span class="tk-f">tx</span>(<span class="tk-k">async</span> (tx) =&gt; tx.<span class="tk-f">put</span>(rows, { id: <span class="tk-f">uuid</span>(), text, at: <span class="tk-t">Date</span>.<span class="tk-f">now</span>() }), ctx),
+		page: <span class="tk-k">async</span> ({ after }, ctx) =&gt; rows.<span class="tk-f">page</span>(recent, <span class="tk-n">50</span>, ctx, { after }),   <span class="tk-c">// 50 at a time, with a cursor</span>
+	};
+});</code></pre>
+<p>Persisted data lives only in <code>local</code> objects with empty params (one per host and type), so its address never depends
+on who asked or with which params; an object with params (a view per project) reads from such a store. Writes go
+through the same transactions as documents: a note row and a document can change in one commit.</p>
 <p>A <strong>derive</strong> is a value computed from other values, recomputed whenever they change. It is how an object offers
 something it does not store:</p>
 <pre><code><span class="tk-k">const</span> count = self.<span class="tk-f">derive</span>([doc], ([notes]) =&gt; notes.items.length);   <span class="tk-c">// 0, 1, 2, … as notes are added</span>
