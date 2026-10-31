@@ -129,7 +129,7 @@ writes, a note says so.</p>
 <li><a href="#loading">VI. Loading Plugins</a></li>
 <li><a href="#together">VII. Plugins Using Plugins</a></li>
 <li><a href="#reload">VIII. Changing a Plugin</a></li>
-<li><a href="#base-code-and-plugins">Base Code and Plugins</a></li>
+<li><a href="#base">IX. Base Code and Plugins</a></li>
 <li><a href="#reference">Appendix A: Reference</a></li>
 </ol></nav>
 
@@ -472,6 +472,11 @@ host.<span class="tk-f">serve</span>(<span class="tk-t">Search</span>, ({ projec
 	<span class="tk-k">const</span> index = self.<span class="tk-f">derive</span>([notes.list], ([list]) =&gt; <span class="tk-f">buildIndex</span>(list.items));
 	<span class="tk-k">return</span> { variant: <span class="tk-s">"main"</span>, members: { find: <span class="tk-k">async</span> ({ q }) =&gt; <span class="tk-f">lookup</span>(index.value, q) } };
 });</code></pre>
+<div class="note review"><b class="tag">Proposed: importing another plugin by name</b><p>Today another plugin&#39;s file is imported by relative path, which works only when both plugins sit in the same root. A
+plugin in the user&#39;s root cannot reach one the app ships in <code>src/plugins</code> that way. Proposed (not decided): import by
+plugin name, <code>import { Notes } from &quot;@app/notes/contract&quot;</code>, resolved to the discovered plugin of that name wherever its
+directory is.</p>
+</div>
 <p><code>self.get</code> in a factory declares a dependency: Chord makes <code>Search</code> live only once <code>Notes</code> is, and if the notes
 plugin is missing, <code>Search</code> waits with a clear reason (&quot;waiting for notes: not served here&quot;) instead of failing.</p>
 <p>The other way is a <strong>registry</strong>: an extension point one plugin defines and others contribute to. The app&#39;s core
@@ -518,12 +523,36 @@ working if the provider maps the old version (<code>accepts</code>); otherwise i
 </div>
 </section>
 
-<section class="chapter epilogue" id="base-code-and-plugins"><header class="opener"><div class="numeral">∴</div><h2>Base Code and Plugins</h2><p class="lede">What reloads, what restarts, and where the line is.</p></header>
-<p class="dropcap">Everything in <code>plugins/</code> reloads: edit, build, roll out. Everything in your base code (<code>src/</code>, <code>@app/core</code>: host
-kinds, principals, the core facet, the app&#39;s startup) changes only with a restart, and the watcher tells you so.
-Keep base code small: host kinds, principals, and what every plugin needs. Put features in plugins.</p>
+<section class="chapter" id="base"><header class="opener"><div class="numeral">IX</div><h2>Base Code and Plugins</h2><p class="lede">What goes into the app itself, what goes into plugins, and how an app ships plugins of its own.</p></header>
+<p class="dropcap">Every app has two kinds of code, and the line between them decides what can change while the app runs.</p>
+<p><strong>Base code</strong> is the app&#39;s own program: <code>src/</code>, started by <code>node server.ts</code>. It is what every plugin shares: the host
+kinds (<code>Server</code>, <code>Project</code>), the principal type, the app&#39;s <code>defineFacet</code>, the registries plugins contribute to
+(<code>Panels</code>), and the startup that creates hosts and loads plugins. Plugins import it as a host package (<code>@app/core</code>),
+so inside one process there is exactly one of each. Base code changes only with a restart: if it reloaded, the
+process would hold two <code>Panels</code> registries, and old and new plugins would no longer meet.</p>
+<p><strong>Plugins</strong> are features: notes, search, export, a terminal. They reload on an edit, a broken one is left out alone,
+and an agent can write one while the app runs.</p>
+<p>The rule: <strong>base code is what everything shares, not features.</strong> A feature in base code cannot be edited live, and a
+bug in it needs a restart. Keep base code to host kinds, principals, shared registries and startup.</p>
+<h3 id="plugins-the-app-ships">Plugins the app ships</h3>
+<p>An app usually comes with plugins of its own: notes, search, settings. They are still plugins, kept in a root inside
+the app, next to the root where users and agents add theirs:</p>
+<pre><code><span class="tk-k">const</span> plugins = <span class="tk-f">createPlugins</span>({
+	roots: [<span class="tk-s">"./src/plugins"</span>, <span class="tk-f">join</span>(dataDir, <span class="tk-s">"plugins"</span>)],   <span class="tk-c">// the app's own plugins, then the user's</span>
+	kinds,
+	onError,
+}, ctx);</code></pre>
+<p>They are built at startup like any plugin (a quarter of a second for twenty), reload like any plugin, and are left
+out alone when broken. If two roots have a plugin with the same name, the first root wins, and the other is reported.</p>
+<h3 id="subpaths-of-host-packages">Subpaths of host packages</h3>
+<p>A host package is matched by its exact name. If base code offers several entry points (<code>@app/core</code> for every host,
+<code>@app/core/web</code> for pages), each is its own host package, listed by name for the build and given as a module when
+evaluating, as <code>react</code> and <code>react/jsx-runtime</code> are. A plugin importing a subpath that is not listed gets a build
+error naming it.</p>
+<h3 id="what-the-app-kit-will-change">What the app kit will change</h3>
 <p>The app kit being designed next (<code>chord/next/app</code>) will make the base code nearly empty: <code>startApp</code> and <code>startWorker</code>
-with Chord&#39;s conventions for hosts, users, authentication and storage, so an app is mostly plugins.</p>
+with Chord&#39;s conventions for hosts, users, authentication and storage. An app is then its plugins, its own ones in
+<code>src/plugins</code> and the user&#39;s beside them.</p>
 </section>
 
 <section class="chapter appendix" id="reference"><header class="opener"><div class="numeral">A</div><h2>Reference</h2></header>

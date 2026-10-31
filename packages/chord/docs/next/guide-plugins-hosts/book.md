@@ -499,6 +499,13 @@ host.serve(Search, ({ project }, principal, self) => {
 });
 ```
 
+:::review | Proposed: importing another plugin by name
+Today another plugin's file is imported by relative path, which works only when both plugins sit in the same root. A
+plugin in the user's root cannot reach one the app ships in `src/plugins` that way. Proposed (not decided): import by
+plugin name, `import { Notes } from "@app/notes/contract"`, resolved to the discovered plugin of that name wherever its
+directory is.
+:::
+
 `self.get` in a factory declares a dependency: Chord makes `Search` live only once `Notes` is, and if the notes
 plugin is missing, `Search` waits with a clear reason ("waiting for notes: not served here") instead of failing.
 
@@ -542,14 +549,50 @@ A change to a contract (a new field in `Notes`'s state) gets a new `version`. A 
 working if the provider maps the old version (`accepts`); otherwise it waits with "version mismatch" until it reloads.
 :::
 
-# Base Code and Plugins {.epilogue lede="What reloads, what restarts, and where the line is."}
+# Base Code and Plugins {#base lede="What goes into the app itself, what goes into plugins, and how an app ships plugins of its own."}
 
-Everything in `plugins/` reloads: edit, build, roll out. Everything in your base code (`src/`, `@app/core`: host
-kinds, principals, the core facet, the app's startup) changes only with a restart, and the watcher tells you so.
-Keep base code small: host kinds, principals, and what every plugin needs. Put features in plugins.
+Every app has two kinds of code, and the line between them decides what can change while the app runs.
+
+**Base code** is the app's own program: `src/`, started by `node server.ts`. It is what every plugin shares: the host
+kinds (`Server`, `Project`), the principal type, the app's `defineFacet`, the registries plugins contribute to
+(`Panels`), and the startup that creates hosts and loads plugins. Plugins import it as a host package (`@app/core`),
+so inside one process there is exactly one of each. Base code changes only with a restart: if it reloaded, the
+process would hold two `Panels` registries, and old and new plugins would no longer meet.
+
+**Plugins** are features: notes, search, export, a terminal. They reload on an edit, a broken one is left out alone,
+and an agent can write one while the app runs.
+
+The rule: **base code is what everything shares, not features.** A feature in base code cannot be edited live, and a
+bug in it needs a restart. Keep base code to host kinds, principals, shared registries and startup.
+
+## Plugins the app ships
+
+An app usually comes with plugins of its own: notes, search, settings. They are still plugins, kept in a root inside
+the app, next to the root where users and agents add theirs:
+
+```ts
+const plugins = createPlugins({
+	roots: ["./src/plugins", join(dataDir, "plugins")],   // the app's own plugins, then the user's
+	kinds,
+	onError,
+}, ctx);
+```
+
+They are built at startup like any plugin (a quarter of a second for twenty), reload like any plugin, and are left
+out alone when broken. If two roots have a plugin with the same name, the first root wins, and the other is reported.
+
+## Subpaths of host packages
+
+A host package is matched by its exact name. If base code offers several entry points (`@app/core` for every host,
+`@app/core/web` for pages), each is its own host package, listed by name for the build and given as a module when
+evaluating, as `react` and `react/jsx-runtime` are. A plugin importing a subpath that is not listed gets a build
+error naming it.
+
+## What the app kit will change
 
 The app kit being designed next (`chord/next/app`) will make the base code nearly empty: `startApp` and `startWorker`
-with Chord's conventions for hosts, users, authentication and storage, so an app is mostly plugins.
+with Chord's conventions for hosts, users, authentication and storage. An app is then its plugins, its own ones in
+`src/plugins` and the user's beside them.
 
 # Reference {.appendix}
 
