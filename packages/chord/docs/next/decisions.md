@@ -2089,6 +2089,9 @@ validation and copies the v2 kernel added around Delta.
   (before the rework +4.5 µs): the request's scope (2.1 µs), URL parsing, admission and routing, the baseline's headers,
   the scope's seal, and about 5 µs of Node's microtask machinery an async path triggers. Accepted against the 10% bar.
   No `request.header(name)` accessor: an authenticator reading headers builds the Web `Request` (about 3.5 µs more).
+- **A CSP nonce per response (owner, 2026-10-31: "csp ok"; Fable's recheck):** the HTTP component makes a fresh script
+  nonce for every response (`request.nonce`), not one per server: a nonce read from one page cannot be reused by an
+  injected script elsewhere.
 - **A plugin's npm dependencies are bundled; external only by opt-in (owner, 2026-10-29: "explicit opt in + (a)"):**
   a plugin's `dependencies` are installed into its own `node_modules` (`npm install --ignore-scripts`) and bundled into
   each facet that imports them (host packages, its `peerDependencies`, stay external and are passed in). On Node a
