@@ -12,6 +12,7 @@
 
 ### Changed
 
+- Tightened system prompt
 - `pi update` for installs from the pi.dev installer no longer passes `--min-release-age=0` to `npm ci`. The release lockfile pins every package, so the flag had no effect, and security scanners that block it stopped the update ([#11262](https://github.com/earendil-works/pi/issues/11262))
 - `/model` and `/scoped-models` now show a model's name next to its ID when the name adds words the ID lacks, such as a renamed `models.json` override ([#5916](https://github.com/earendil-works/pi/issues/5916), [#11347](https://github.com/earendil-works/pi/pull/11347))
 - MCP OAuth sign-in now uses pi's Client ID Metadata Document by default when the authorization server supports it for public clients, and registers a client dynamically otherwise, like Codex, Claude Code, and opencode. Clients registered before stay in use while their redirect URI matches. The new default `oauth.clientRegistration: "auto"` registers when `clientName` or a non-default `callbackUrl` is set; `"dcr"` always registers. `pi mcp add --oauth-client-registration` sets the mode ([#11426](https://github.com/earendil-works/pi/issues/11426))
