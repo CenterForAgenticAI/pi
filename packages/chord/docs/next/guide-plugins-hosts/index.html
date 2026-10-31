@@ -1,0 +1,463 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Hosts and Plugins: a tutorial for Chord v2</title>
+<style>
+
+:root{--paper:#fbf8f2;--ink:#2a2723;--muted:#7b7468;--rule:#e3dbcc;--accent:#b4472f;--blue:#2e6a8a;--sand:#c2b18c;--soft:#f4eee2}
+*{box-sizing:border-box}
+html{background:#efe9dd}
+body{margin:0;color:var(--ink);font:19px/1.68 'Iowan Old Style','Palatino Linotype',Palatino,'Book Antiqua',Georgia,serif;
+ -webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+.book{max-width:860px;margin:0 auto;background:var(--paper);box-shadow:0 0 0 1px #e1d9c8,0 30px 80px -40px rgba(60,40,10,.35);padding:0 0 4rem}
+.inner{padding:0 90px}
+h1,h2,h3{font-weight:400;line-height:1.15}
+h2{font-size:2.1rem;margin:.2em 0 .3em;letter-spacing:-.01em}
+h3{font-size:1.05rem;text-transform:uppercase;letter-spacing:.14em;margin:2.4em 0 .6em;color:var(--ink);font-weight:600;
+ font-family:'Avenir Next','Helvetica Neue',sans-serif}
+p{margin:0 0 1.05em;hyphens:auto;text-align:left}
+code{font:.8em/1 'SF Mono',Menlo,Consolas,monospace;background:#f1ebde;padding:.1em .35em;border-radius:3px}
+pre{font:.74rem/1.55 'SF Mono',Menlo,Consolas,monospace;background:#f4eee2;border-left:3px solid var(--sand);padding:1rem 1.2rem;margin:1.4rem 0 1.8rem;
+ overflow-x:auto;border-radius:0 4px 4px 0;white-space:pre;tab-size:2}
+pre code{background:none;padding:0;font-size:1em}
+em{font-style:italic}
+a{color:var(--blue)}
+.cover{min-height:92vh;display:flex;flex-direction:column;justify-content:center;padding:90px;background:
+ radial-gradient(circle at 85% 15%,rgba(180,71,47,.13),transparent 40%),radial-gradient(circle at 10% 90%,rgba(46,106,138,.12),transparent 45%),var(--paper);
+ border-bottom:1px solid var(--rule)}
+.kicker{font:600 .78rem 'Avenir Next','Helvetica Neue',sans-serif;letter-spacing:.22em;text-transform:uppercase;color:var(--accent)}
+.cover h1{font-size:5.2rem;line-height:.98;margin:.35em 0 .25em;letter-spacing:-.025em}
+.subtitle{font-size:1.45rem;font-style:italic;color:#4a453e;max-width:30em;text-align:left}
+.cover-stats,.stats{display:flex;flex-wrap:wrap;gap:1.2rem 2.4rem;margin:2.2rem 0}
+.stats{margin:1.6rem 0 1.8rem;padding:1.1rem 0;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+.stat b{display:block;font-size:2.1rem;font-weight:400;line-height:1.1;font-variant-numeric:lining-nums}
+.stat span{font:.78rem/1.3 'Avenir Next','Helvetica Neue',sans-serif;color:var(--muted);letter-spacing:.03em;display:block;max-width:14em}
+.cover-note{font-size:.9rem;color:var(--muted);max-width:34em;text-align:left;margin-top:2rem}
+.toc{padding:4rem 0 2rem}
+.toc ol{list-style:none;padding:0;margin:1rem 0;columns:2;column-gap:3rem}
+.toc li{padding:.3rem 0;border-bottom:1px dotted var(--rule);break-inside:avoid}
+.toc a{color:var(--ink);text-decoration:none}
+.toc a:hover{color:var(--accent)}
+.preface{padding-top:2rem}
+.findings{padding-left:1.4em}
+.findings li{margin:.55em 0;padding-left:.3em}
+.findings li::marker{color:var(--accent);font-weight:600}
+.chapter{padding-top:4.5rem;margin-top:3rem;border-top:1px solid var(--rule)}
+.opener{text-align:center;margin-bottom:2.6rem}
+.numeral{font-size:4.2rem;color:var(--accent);line-height:1;font-variant:small-caps;letter-spacing:.05em}
+.opener h2{font-size:2.5rem;margin:.25em 0}
+.lede{font-style:italic;color:#5a544a;font-size:1.12rem;max-width:30em;margin:0 auto;text-align:center}
+.dropcap::first-letter{float:left;font-size:4.1em;line-height:.82;padding:.06em .09em 0 0;color:var(--accent)}
+.fig{margin:2rem 0 2.2rem}
+.fig.wide{margin-left:-50px;margin-right:-50px}
+.fig svg{display:block;margin:0 auto}
+figcaption{font:.8rem/1.45 'Avenir Next','Helvetica Neue',sans-serif;color:var(--muted);margin-top:.7rem;padding-left:.8rem;border-left:2px solid var(--rule)}
+.fignum{color:var(--ink);font-weight:600}
+.note{font:.86rem/1.55 'Avenir Next','Helvetica Neue',sans-serif;color:#5b5549;background:#f4eee2;border-left:3px solid var(--sand);
+ padding:.9rem 1.1rem;margin:1.8rem 0;border-radius:0 4px 4px 0}
+.note.review{border-left-color:var(--accent)}
+.note b.tag{font-weight:600;letter-spacing:.12em;text-transform:uppercase;font-size:.72rem;color:var(--accent);display:block;margin-bottom:.3rem}
+.note code{font-size:.85em}
+table{width:100%;border-collapse:collapse;margin:1.4rem 0 1.8rem;font:.8rem/1.4 'Avenir Next','Helvetica Neue',sans-serif}
+th{text-align:left;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;font-size:.68rem;border-bottom:1.5px solid var(--ink);padding:.45rem .5rem}
+td{padding:.42rem .5rem;border-bottom:1px solid var(--rule);vertical-align:top}
+td code{font-size:.92em}
+table.num td:not(:first-child),table.num th:not(:first-child){text-align:right}
+.epilogue p{font-size:1.04em}
+.appendix{font-size:.92em}
+.appendix ul,.chapter ul{padding-left:1.2em}
+.appendix li,.chapter li{margin:.4em 0}
+.colophon{text-align:center;font:.78rem 'Avenir Next','Helvetica Neue',sans-serif;color:var(--muted);margin-top:4rem;letter-spacing:.05em}
+@media (max-width:760px){.inner{padding:0 22px}.cover{padding:40px 22px}.cover h1{font-size:3.2rem}.fig.wide{margin-left:0;margin-right:0}
+ .toc ol{columns:1}p{text-align:left}body{font-size:17px}}
+@media print{html{background:#fff}.book{box-shadow:none}.chapter{break-before:page}.fig{break-inside:avoid}}
+.transcript p b{font:600 .78rem 'Avenir Next','Helvetica Neue',sans-serif;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-right:.3em}
+pre .tk-c{color:#8d8576;font-style:italic}pre .tk-s{color:#5f7a3d}pre .tk-n{color:#a0662a}pre .tk-k{color:#b4472f}pre .tk-t{color:#2e6a8a}pre .tk-f{color:#7a3f6a}
+h4{font:600 .82rem 'Avenir Next','Helvetica Neue',sans-serif;letter-spacing:.06em;margin:1.8em 0 .5em;color:var(--muted)}
+.inner ul,.inner ol:not(.findings){padding-left:1.2em}
+.inner li{margin:.35em 0}
+blockquote{margin:1.4rem 0;padding:.2rem 0 .2rem 1.2rem;border-left:3px solid var(--rule);color:#5a544a;font-style:italic}
+.fig svg text{dominant-baseline:auto}
+.fig .replay{font:600 .7rem 'Avenir Next','Helvetica Neue',sans-serif;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);
+ background:none;border:1px solid var(--rule);border-radius:3px;padding:.2rem .55rem;margin:0 0 0 1rem;cursor:pointer;float:right}
+.fig .replay:hover{border-color:var(--accent)}
+.anim.armed .step{opacity:0}
+.anim.armed.play .step{animation:stepIn .45s ease-out both;animation-delay:calc(var(--i) * var(--pace, .45s))}
+.anim.armed.play .step.edge{animation-name:edgeIn}
+@keyframes stepIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+@keyframes edgeIn{from{opacity:0}to{opacity:1}}
+.steps{margin:2rem 0 2.2rem;border:1px solid var(--rule);border-radius:6px;background:#fffdf8}
+.steps-head{display:flex;align-items:center;gap:.8rem;padding:.6rem 1rem;border-bottom:1px solid var(--rule);
+ font:600 .72rem 'Avenir Next','Helvetica Neue',sans-serif;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+.steps-head .title{flex:1}
+.steps-head .count{color:var(--muted);letter-spacing:.06em}
+.steps-head button{font:600 .72rem 'Avenir Next','Helvetica Neue',sans-serif;color:var(--ink);background:var(--soft);border:1px solid var(--rule);
+ border-radius:3px;padding:.25rem .65rem;cursor:pointer}
+.steps-head button:disabled{opacity:.35;cursor:default}
+.step-panel{padding:1rem 1.2rem .4rem}
+.step-panel>h4:first-child{margin-top:.2rem;color:var(--ink)}
+.steps.js .step-panel{display:none}
+.steps.js .step-panel.on{display:block}
+.steps:not(.js) .steps-head button,.steps:not(.js) .steps-head .count{display:none}
+.steps:not(.js) .step-panel+.step-panel{border-top:1px dashed var(--rule)}
+.fig figcaption{display:flow-root}
+.fig svg{max-width:100%;height:auto}
+table{max-width:100%}
+@media (max-width:760px){.inner{padding:0 20px}.cover{padding:48px 22px}.cover h1{font-size:3.2rem}.fig.wide{margin-left:0;margin-right:0}table{display:block;overflow-x:auto}.toc ol{columns:1}}
+</style>
+
+
+</head>
+<body><div class="book">
+<section class="cover">
+  <div class="kicker">A guide · Chord v2 · 2026-10-31</div>
+  <h1>Hosts<br>and Plugins</h1>
+  <p class="subtitle">Build a small notes app step by step, from one host to plugins on a server and on workers, edited while it runs</p>
+  <div class="cover-stats"><div class="stat"><b>3</b><span>kinds of host in an app: server, worker, client</span></div><div class="stat"><b>1</b><span>file per host kind in a plugin</span></div><div class="stat"><b>0</b><span>restarts to apply a plugin edit</span></div><div class="stat"><b>1</b><span>rule: plugins talk only through object types and registries</span></div></div>
+  <div class="cover-note"><p>A tutorial for people building apps on Chord v2, written by the redesign session from <code>design.md</code>, <code>slice-7c.md</code>,
+<code>slice-10.md</code>, the decision log and the code in <code>packages/chord/src/next</code> and <code>src/next-node</code>. API names are the
+current ones; where slice 10&#39;s fix round or the app kit (<code>chord/next/app</code>, being designed) will change what app code
+writes, a note says so.</p>
+</div>
+</section><div class="inner">
+<nav class="toc"><h2>Contents</h2><ol>
+<li><a href="#before-we-begin">Before we begin</a></li>
+<li><a href="#host">I. One Host</a></li>
+<li><a href="#hosts">II. Several Hosts</a></li>
+<li><a href="#plugins">III. Plugins</a></li>
+<li><a href="#loading">IV. Loading Plugins</a></li>
+<li><a href="#together">V. Plugins Using Plugins</a></li>
+<li><a href="#reload">VI. Changing a Plugin</a></li>
+<li><a href="#base-code-and-plugins">Base Code and Plugins</a></li>
+<li><a href="#reference">Appendix A: Reference</a></li>
+</ol></nav>
+
+<section class="preface" id="before-we-begin">
+<h2>Before we begin</h2>
+<p class="dropcap">You want to build a notes app. You type a note in a browser tab, and every other tab sees it at once. Each project
+gets its own notes in its own process, so a project that misbehaves cannot take the others down. And you, or an agent
+you work with, add features while the app runs: a search, an export button, a word count, without restarting
+anything.</p>
+<p>Chord gives you three things for that. <strong>Hosts</strong>: the processes of your app (the server, a worker per project, the
+browser tabs), connected to each other. <strong>Objects</strong>: the state and methods your app is made of, living on one host and
+used from any other. <strong>Plugins</strong>: directories of code that declare objects for each kind of host, loaded and
+reloaded while the app runs.</p>
+<p>This book builds the app in that order. Each chapter adds one concept and shows complete code.</p>
+<h3 id="seven-things-to-know">Seven things to know</h3>
+<ol class="findings">
+<li><strong>A host is one participant.</strong> The server, each worker and each browser tab is a host; hosts connect over links.</li>
+<li><strong>An object has a type, and a type is a contract.</strong> The contract names the object&#39;s state and methods; any host can
+ask for an object by type and params, and Chord finds where it lives.</li>
+<li><strong>A facet declares, an object acts.</strong> A facet is a plugin&#39;s code for one host kind: it says which object types this
+host serves. The objects hold the state and do the work.</li>
+<li><strong>A plugin is a directory.</strong> A <code>package.json</code> with the plugin&#39;s name, and one file per host kind: <code>server.ts</code>,
+<code>worker.ts</code>, <code>web.tsx</code>.</li>
+<li><strong>The server builds, every host evaluates.</strong> The plugins component builds each facet into a small script; the
+server, workers and tabs load the scripts for their kind.</li>
+<li><strong>Plugins meet through types and registries.</strong> One plugin uses another&#39;s objects through its contract, or
+contributes to a registry another defines. Nothing else crosses between plugins.</li>
+<li><strong>An edit is a rollout.</strong> Change a file, build, roll out: the server, then every worker, swap the plugin&#39;s objects in
+place; a broken edit keeps the old code running and reports why.</li>
+</ol>
+<h3 id="words-used-throughout">Words used throughout</h3>
+<p>A <strong>host</strong> is one participant of the app, made with <code>createHost</code>. A <strong>host kind</strong> (<code>Server</code>, <code>Session</code>) describes
+addressable hosts; an <strong>address</strong> (<code>Session({ id: &quot;p1&quot; })</code>) names one. An <strong>object type</strong> is a contract: <code>local</code> (used
+on its own host only) or <code>remote</code> (used from any host). An <strong>object</strong> is one instance of a type, per params. A
+<strong>facet</strong> is a plugin&#39;s declarations for one host kind. A <strong>plugin</strong> is a directory with a <code>package.json</code>. A
+<strong>reference</strong> is what you get when you ask for an object (<code>host.get</code>, <code>self.get</code>, <code>ctx.get</code>). A <strong>registry</strong> is an
+extension point: one plugin defines it, others contribute. A <strong>rollout</strong> applies a build to the hosts in order.</p>
+</section>
+
+<section class="chapter" id="host"><header class="opener"><div class="numeral">I</div><h2>One Host</h2><p class="lede">The smallest app: one process, one object type, one call.</p></header>
+<p class="dropcap">Start without plugins. One host, one object that keeps notes:</p>
+<pre><code><span class="tk-k">import</span> { createHost, defineFacet, defineState, local, method, obj, arr, str } <span class="tk-k">from</span> <span class="tk-s">"@earendil-works/chord/next"</span>;
+
+<span class="tk-c">// the contract: what a Notes object looks like from outside</span>
+<span class="tk-k">const</span> <span class="tk-t">Notes</span> = <span class="tk-f">local</span>(<span class="tk-s">"notes.store"</span>, {
+	version: <span class="tk-n">1</span>,
+	params: {},                                        <span class="tk-c">// one object per host: no params</span>
+	members: {
+		list: <span class="tk-f">obj</span>({ items: <span class="tk-f">arr</span>(<span class="tk-f">str</span>()) }),             <span class="tk-c">// state anyone can read and watch</span>
+		add: <span class="tk-f">method</span>(<span class="tk-f">obj</span>({ text: <span class="tk-f">str</span>() })),            <span class="tk-c">// a method: arguments checked by Chord</span>
+	},
+});
+
+<span class="tk-c">// the document the object keeps</span>
+<span class="tk-k">const</span> <span class="tk-t">NotesDoc</span> = <span class="tk-f">defineState</span>(<span class="tk-s">"notes"</span>, { schema: <span class="tk-f">obj</span>({ items: <span class="tk-f">arr</span>(<span class="tk-f">str</span>()) }), version: <span class="tk-n">1</span>, initial: () =&gt; ({ items: [] }) });
+
+<span class="tk-c">// the facet: which types this host serves, and how to make each object</span>
+<span class="tk-k">const</span> facet = <span class="tk-f">defineFacet</span>((host) =&gt; {
+	host.<span class="tk-f">serve</span>(<span class="tk-t">Notes</span>, (_params, self) =&gt; {
+		<span class="tk-k">const</span> doc = self.<span class="tk-f">state</span>(<span class="tk-t">NotesDoc</span>);
+		<span class="tk-k">return</span> {
+			list: doc,
+			add: <span class="tk-k">async</span> ({ text }, ctx) =&gt; self.<span class="tk-f">tx</span>(<span class="tk-k">async</span> (tx) =&gt; { (<span class="tk-k">await</span> tx.<span class="tk-f">draft</span>(doc)).items.<span class="tk-f">push</span>(text); }, ctx),
+		};
+	});
+});
+
+<span class="tk-k">const</span> server = <span class="tk-f">createHost</span>({ onError: console.error });
+<span class="tk-k">await</span> server.<span class="tk-f">load</span>([{ name: <span class="tk-s">"@app/notes"</span>, facet }], ctx);
+<span class="tk-k">const</span> notes = <span class="tk-k">await</span> server.<span class="tk-f">get</span>(<span class="tk-t">Notes</span>, {}, ctx);        <span class="tk-c">// a reference: live, with its state</span>
+<span class="tk-k">await</span> notes.<span class="tk-f">add</span>({ text: <span class="tk-s">"buy milk"</span> }, ctx);
+console.<span class="tk-f">log</span>(notes.list.value);                          <span class="tk-c">// { items: ["buy milk"] }</span></code></pre>
+<p>Four things happened. The <strong>contract</strong> <code>Notes</code> says what the object offers. The <strong>facet</strong> says this host serves
+<code>Notes</code>, with a <strong>factory</strong> that declares the object&#39;s parts: a document, and a method writing it in a transaction.
+<code>load</code> publishes the facet. <code>get</code> returns a <strong>reference</strong> once the object is live; its members are the contract&#39;s.</p>
+<p>The factory only declares: it is synchronous and opens nothing. Chord activates the object (loads its documents, opens
+what it asked to open) and then serves calls. That is why the same factory can run again when the code changes.</p>
+</section>
+
+<section class="chapter" id="hosts"><header class="opener"><div class="numeral">II</div><h2>Several Hosts</h2><p class="lede">A server, a worker per project, browser tabs: how they find each other&#39;s objects.</p></header>
+<p class="dropcap">Now give each project its own process. Declare the kinds of addressable host, and make notes a <code>remote</code> type that
+lives on its project&#39;s worker:</p>
+<pre><code><span class="tk-k">export</span> <span class="tk-k">const</span> <span class="tk-t">Server</span> = <span class="tk-f">hostKind</span>(<span class="tk-s">"server"</span>);
+<span class="tk-k">export</span> <span class="tk-k">const</span> <span class="tk-t">Project</span> = <span class="tk-f">hostKind</span>(<span class="tk-s">"project"</span>, { id: <span class="tk-f">str</span>() });
+
+<span class="tk-k">export</span> <span class="tk-k">const</span> <span class="tk-t">Notes</span> = <span class="tk-f">remote</span>(<span class="tk-s">"notes"</span>, {
+	version: <span class="tk-n">1</span>,
+	params: { project: <span class="tk-f">str</span>() },
+	hostAddress: ({ project }) =&gt; <span class="tk-t">Project</span>({ id: project }),   <span class="tk-c">// where an object of these params lives</span>
+	variants: { editor: { state: { list: <span class="tk-t">NotesSchema</span> }, methods: { add: <span class="tk-f">method</span>(<span class="tk-t">AddArgs</span>) } } },
+});</code></pre>
+<p><code>hostAddress</code> is the whole routing story. A tab asks for <code>Notes { project: &quot;p1&quot; }</code>. Its host computes the address,
+<code>Project(p1)</code>, and sends the request to its parent, the server. The server has a <strong>route</strong> for <code>Project</code>: it starts (or
+finds) the worker for <code>p1</code> and passes the request on. The worker serves <code>Notes</code>. The tab gets a reference whose state
+follows the worker&#39;s document, one frame per change.</p>
+<figure class="fig wide anim"><svg viewBox="0 0 720 342" width="100%" role="img" aria-label="A tab holds a project's notes: the server routes by address to the project's worker and relays, without reading the data." xmlns="http://www.w3.org/2000/svg" style="font-family:'Avenir Next','Helvetica Neue',Helvetica,Arial,sans-serif;max-width:760px"><defs><marker id="f1m" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#7b7468"/></marker><marker id="f1a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#b4472f"/></marker><marker id="f1b" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2e6a8a"/></marker></defs><text x="16" y="22" font-size="10" fill="#2e6a8a" text-anchor="start" font-weight="600" letter-spacing="2">CLIENTS</text><text x="16" y="144" font-size="10" fill="#b4472f" text-anchor="start" font-weight="600" letter-spacing="2">SERVER</text><text x="16" y="266" font-size="10" fill="#7b7468" text-anchor="start" font-weight="600" letter-spacing="2">WORKERS</text><g class="step" style="--i:1"><rect x="137" y="36" width="210" height="44" rx="4" fill="#fff" stroke="#c9bfae"/><text x="242" y="55.3" font-size="11" fill="#2a2723" text-anchor="middle">tab A</text><text x="242" y="69.3" font-size="9.5" fill="#7b7468" text-anchor="middle">holds Notes { project: p1 }</text></g><g class="step" style="--i:4"><rect x="373" y="36" width="210" height="44" rx="4" fill="#fff" stroke="#c9bfae"/><text x="478" y="55.3" font-size="11" fill="#2a2723" text-anchor="middle">tab B</text><text x="478" y="69.3" font-size="9.5" fill="#7b7468" text-anchor="middle">holds Notes { project: p1 }</text></g><g class="step" style="--i:3"><rect x="255" y="158" width="210" height="44" rx="4" fill="#fff" stroke="#c9bfae"/><text x="360" y="177.3" font-size="11" fill="#2a2723" text-anchor="middle">server</text><text x="360" y="191.3" font-size="9.5" fill="#7b7468" text-anchor="middle">route Project → worker</text></g><g class="step" style="--i:7"><rect x="137" y="280" width="210" height="44" rx="4" fill="#fff" stroke="#c9bfae"/><text x="242" y="299.3" font-size="11" fill="#2a2723" text-anchor="middle">worker p1</text><text x="242" y="313.3" font-size="9.5" fill="#7b7468" text-anchor="middle">serves Notes { p1 }</text></g><g class="step" style="--i:0"><rect x="373" y="280" width="210" height="44" rx="4" fill="#fff" stroke="#c9bfae"/><text x="478" y="299.3" font-size="11" fill="#2a2723" text-anchor="middle">worker p2</text><text x="478" y="313.3" font-size="9.5" fill="#7b7468" text-anchor="middle">serves Notes { p2 }</text></g><g class="step edge" style="--i:2"><path d="M242 80 L360 156" fill="none" stroke="#7b7468" marker-end="url(#f1m)"/><rect x="305" y="112" width="29.1" height="13" fill="#fbf8f2" opacity=".92"/><text x="309" y="122" font-size="9.5" fill="#7b7468" text-anchor="start">hold</text></g><g class="step edge" style="--i:5"><path d="M478 80 L360 156" fill="none" stroke="#7b7468" marker-end="url(#f1m)"/><rect x="423" y="112" width="29.1" height="13" fill="#fbf8f2" opacity=".92"/><text x="427" y="122" font-size="9.5" fill="#7b7468" text-anchor="start">hold</text></g><g class="step edge" style="--i:6"><path d="M360 202 L242 278" fill="none" stroke="#7b7468" marker-end="url(#f1m)"/><rect x="305" y="234" width="34.3" height="13" fill="#fbf8f2" opacity=".92"/><text x="309" y="244" font-size="9.5" fill="#7b7468" text-anchor="start">relay</text></g></svg><figcaption><button class="replay" type="button">Replay</button><span class="fignum">Figure 1.</span> A tab holds a project&#39;s notes: the server routes by address to the project&#39;s worker and relays, without reading the data.</figcaption></figure>
+<p>Each host is created the same way, with what it is:</p>
+<pre><code><span class="tk-c">// server.ts</span>
+<span class="tk-k">const</span> server = <span class="tk-f">createHost</span>&lt;P&gt;({ address: <span class="tk-t">Server</span>(), principal: { kind: <span class="tk-s">"server"</span> }, onError });
+
+<span class="tk-c">// worker.ts (started by the server for one project)</span>
+<span class="tk-k">const</span> worker = <span class="tk-f">createHost</span>&lt;P&gt;({ address: <span class="tk-t">Project</span>({ id }), principal: { kind: <span class="tk-s">"worker"</span>, project: id }, onError });
+worker.<span class="tk-f">connect</span>(parentLink, { principal: { kind: <span class="tk-s">"server"</span> }, trusted: <span class="tk-k">true</span> }, ctx);
+
+<span class="tk-c">// a browser tab: no address, it is a client</span>
+<span class="tk-k">const</span> tab = <span class="tk-f">createHost</span>&lt;P&gt;({ onError });
+tab.<span class="tk-f">connect</span>(<span class="tk-f">webSocketLink</span>(<span class="tk-k">new</span> <span class="tk-t">WebSocket</span>(<span class="tk-s">"/chord"</span>)), { principal: { kind: <span class="tk-s">"server"</span> } }, ctx);</code></pre>
+<p><code>P</code> is your app&#39;s type of <strong>principal</strong>, who is calling: an owner, a guest, the server, a worker. Links stamp it;
+a <code>remote</code> object is made per principal, so a guest can get a read-only variant of the same notes.</p>
+<div class="note"><b class="tag">Coming with the app kit</b><p>Starting workers, routing a host kind to them, the WebSocket entry and authentication are slice 10&#39;s components today
+(<code>createWorkers</code>, <code>chord.http</code>), wired by the app. The opinionated app kit (<code>chord/next/app</code>, being designed) will do
+this wiring for you: <code>startApp(...)</code> and <code>startWorker()</code>.</p>
+</div>
+</section>
+
+<section class="chapter" id="plugins"><header class="opener"><div class="numeral">III</div><h2>Plugins</h2><p class="lede">Move the code into a directory that can be added, edited and removed while the app runs.</p></header>
+<p class="dropcap">So far the facets were part of the app&#39;s own code. A <strong>plugin</strong> is the same code in its own directory:</p>
+<pre class="plain"><code>plugins/notes/
+  package.json        { "name": "@app/notes" }
+  contract.ts         the Notes contract (other plugins import it)
+  worker.ts           the facet for workers: serves Notes
+  server.ts           the facet for the server: an export route
+  web.tsx             the facet for browser tabs: a notes panel</code></pre>
+<p>The plugin&#39;s name is its <code>package.json</code> name. Each file named after a <strong>host kind</strong> is that kind&#39;s facet, its
+default export a <code>defineFacet(...)</code>. A plugin has only the files it needs: a plugin that only adds a route has a
+<code>server.ts</code> and nothing else.</p>
+<pre><code><span class="tk-c">// plugins/notes/worker.ts</span>
+<span class="tk-k">import</span> { defineFacet } <span class="tk-k">from</span> <span class="tk-s">"@app/core"</span>;
+<span class="tk-k">import</span> { <span class="tk-t">Notes</span> } <span class="tk-k">from</span> <span class="tk-s">"./contract.ts"</span>;
+
+<span class="tk-k">export</span> <span class="tk-k">default</span> <span class="tk-f">defineFacet</span>((host) =&gt; {
+	host.<span class="tk-f">serve</span>(<span class="tk-t">Notes</span>, ({ project }, principal, self) =&gt; {
+		<span class="tk-k">const</span> doc = self.<span class="tk-f">state</span>(<span class="tk-t">NotesDoc</span>);
+		<span class="tk-k">return</span> { variant: <span class="tk-s">"editor"</span>, members: { list: doc, add: <span class="tk-k">async</span> ({ text }, ctx) =&gt; <span class="tk-c">/* … */</span> } };
+	});
+});</code></pre>
+<p><code>@app/core</code> is your app&#39;s <strong>base code</strong>, imported by every plugin as a host package (the plugin&#39;s build leaves it
+out; every host passes its own copy in). It holds what plugins share and never reloads: host kinds, the principal
+type, a <code>defineFacet</code> bound to it.</p>
+</section>
+
+<section class="chapter" id="loading"><header class="opener"><div class="numeral">IV</div><h2>Loading Plugins</h2><p class="lede">Discover, build, evaluate, load: what happens between a directory and a running object.</p></header>
+<p class="dropcap">The <strong>plugins component</strong> does the work. You tell it where plugins are and what each host kind needs:</p>
+<pre><code><span class="tk-k">const</span> plugins = <span class="tk-f">createPlugins</span>({
+	roots: [<span class="tk-s">"./plugins"</span>],
+	kinds: {
+		server: { platform: <span class="tk-s">"node"</span>, hostPackages: [<span class="tk-s">"@earendil-works/chord/next"</span>, <span class="tk-s">"@app/core"</span>] },
+		worker: { platform: <span class="tk-s">"node"</span>, hostPackages: [<span class="tk-s">"@earendil-works/chord/next"</span>, <span class="tk-s">"@app/core"</span>] },
+		web: { platform: <span class="tk-s">"browser"</span>, hostPackages: [<span class="tk-s">"@earendil-works/chord/next"</span>, <span class="tk-s">"@app/core"</span>, <span class="tk-s">"react"</span>, <span class="tk-s">"react/jsx-runtime"</span>] },
+	},
+	onError,
+}, ctx);
+
+<span class="tk-k">const</span> report = <span class="tk-k">await</span> plugins.<span class="tk-f">load</span>(server, {
+	kind: <span class="tk-s">"server"</span>,
+	core: [{ name: <span class="tk-s">"@app/core"</span>, facet: coreServerFacet }],
+	modules: { <span class="tk-s">"@earendil-works/chord/next"</span>: chord, <span class="tk-s">"@app/core"</span>: core },
+}, ctx);
+console.<span class="tk-f">log</span>(report.failed);   <span class="tk-c">// plugins left out, with why: [] when all loaded</span></code></pre>
+<div class="steps"><div class="steps-head"><span class="title">What <code>plugins.load</code> does</span><span class="count"></span><button class="prev" type="button">Back</button><button class="next" type="button">Next</button></div><div class="step-panel"><h4>Discover</h4><p>It lists <code>./plugins</code> one level deep and reads each <code>package.json</code>. A directory without one, or with two <code>server</code>
+files, is reported, not loaded.</p>
+</div><div class="step-panel"><h4>Build</h4><p>For each plugin with a <code>server</code> facet, esbuild builds one script from <code>server.ts</code> and everything it imports: the
+plugin&#39;s own files, another plugin&#39;s contract files, its npm dependencies. Host packages stay out. A syntax error is a
+build failure, never a crash.</p>
+</div><div class="step-panel"><h4>Evaluate</h4><p>The script runs and returns the facet. Its <code>import &quot;@app/core&quot;</code> gets the server&#39;s own <code>@app/core</code>, so a <code>ChordError</code>
+from a plugin is the same class as the server&#39;s.</p>
+</div><div class="step-panel"><h4>Load</h4><p><code>host.load</code> runs every facet&#39;s setup and publishes all of them at once. A plugin whose build, evaluation or setup
+fails is left out and listed in <code>report.failed</code>; the others load. Its objects&#39; users wait, and the next edit loads it.</p>
+</div></div>
+<p>A worker never builds: the server builds the worker facets too, and each worker evaluates the scripts it is sent.</p>
+</section>
+
+<section class="chapter" id="together"><header class="opener"><div class="numeral">V</div><h2>Plugins Using Plugins</h2><p class="lede">Two ways one plugin uses another, and the one it may not.</p></header>
+<p class="dropcap">A search plugin wants to search the notes. It <strong>imports the contract</strong> and asks for the object:</p>
+<pre><code><span class="tk-c">// plugins/search/worker.ts</span>
+<span class="tk-k">import</span> { <span class="tk-t">Notes</span> } <span class="tk-k">from</span> <span class="tk-s">"../notes/contract.ts"</span>;   <span class="tk-c">// copied into search's script: contracts only</span>
+
+host.<span class="tk-f">serve</span>(<span class="tk-t">Search</span>, ({ project }, principal, self) =&gt; {
+	<span class="tk-k">const</span> notes = self.<span class="tk-f">get</span>(<span class="tk-t">Notes</span>, { project });   <span class="tk-c">// a dependency: Search goes live once Notes is</span>
+	<span class="tk-k">const</span> index = self.<span class="tk-f">derive</span>([notes.list], ([list]) =&gt; <span class="tk-f">buildIndex</span>(list.items));
+	<span class="tk-k">return</span> { variant: <span class="tk-s">"main"</span>, members: { find: <span class="tk-k">async</span> ({ q }) =&gt; <span class="tk-f">lookup</span>(index.value, q) } };
+});</code></pre>
+<p><code>self.get</code> in a factory declares a dependency: Chord makes <code>Search</code> live only once <code>Notes</code> is, and if the notes
+plugin is missing, <code>Search</code> waits with a clear reason (&quot;waiting for notes: not served here&quot;) instead of failing.</p>
+<p>The other way is a <strong>registry</strong>: an extension point one plugin defines and others contribute to. The app&#39;s core
+defines <code>Panels</code>, and every plugin with a UI contributes one:</p>
+<pre><code><span class="tk-c">// plugins/notes/web.tsx</span>
+<span class="tk-k">export</span> <span class="tk-k">default</span> <span class="tk-f">defineFacet</span>((host, self) =&gt; self.<span class="tk-f">contribute</span>(<span class="tk-t">Panels</span>, { title: <span class="tk-s">"Notes"</span>, <span class="tk-t">Component</span>: <span class="tk-t">NotesPanel</span> }));</code></pre>
+<p>What a plugin may not do is reach into another&#39;s data. Search never reads notes&#39; documents; it uses the <code>Notes</code>
+object&#39;s state. That rule is what lets the notes plugin change its storage without breaking search.</p>
+</section>
+
+<section class="chapter" id="reload"><header class="opener"><div class="numeral">VI</div><h2>Changing a Plugin</h2><p class="lede">Edit, build, roll out: how new code takes over while every tab stays connected.</p></header>
+<p class="dropcap">You change the notes plugin: notes now have a timestamp. The watcher sees the saved file and marks the plugin dirty.
+You (or an agent) build and roll out:</p>
+<pre><code><span class="tk-k">const</span> built = <span class="tk-k">await</span> plugins.<span class="tk-f">build</span>(plugins.state.value.dirty, ctx);
+<span class="tk-k">const</span> result = <span class="tk-k">await</span> plugins.<span class="tk-f">rollout</span>([plugins.<span class="tk-f">step</span>(<span class="tk-s">"server"</span>, server), workers.<span class="tk-f">step</span>(<span class="tk-s">"workers"</span>)], built, ctx);</code></pre>
+<p>The rollout goes host by host, server first, then every running worker. On each host Chord compares the new plugin
+set with the loaded one, runs the new factories against a recording <code>self</code> to see what each object would declare, and
+then gives every object of the changed plugin its fate:</p>
+<table>
+<thead>
+<tr>
+<th>The object</th>
+<th>What happens</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>holds no natives (open files, sockets), the new code neither</td>
+<td><strong>swapped</strong> in place: new methods, same documents; running calls finish on the old code</td>
+</tr>
+<tr>
+<td>holds natives</td>
+<td><strong>restarted</strong>: calls wait, running ones finish, natives close and reopen with the new code</td>
+</tr>
+<tr>
+<td>its type was removed</td>
+<td><strong>ended</strong>; its users wait until something serves it again</td>
+</tr>
+</tbody></table>
+<p>The tab&#39;s reference follows the new object and gets one frame with the difference. Nothing reconnects. If the edit
+is broken (a syntax error, a factory that throws), that plugin keeps its old code on that host and the report says why;
+every other plugin of the rollout applies.</p>
+<div class="note"><b class="tag">Versions</b><p>A change to a contract (a new field in <code>Notes</code>&#39;s state) gets a new <code>version</code>. A tab built with the old contract keeps
+working if the provider maps the old version (<code>accepts</code>); otherwise it waits with &quot;version mismatch&quot; until it reloads.</p>
+</div>
+</section>
+
+<section class="chapter epilogue" id="base-code-and-plugins"><header class="opener"><div class="numeral">∴</div><h2>Base Code and Plugins</h2><p class="lede">What reloads, what restarts, and where the line is.</p></header>
+<p class="dropcap">Everything in <code>plugins/</code> reloads: edit, build, roll out. Everything in your base code (<code>src/</code>, <code>@app/core</code>: host
+kinds, principals, the core facet, the app&#39;s startup) changes only with a restart, and the watcher tells you so.
+Keep base code small: host kinds, principals, and what every plugin needs. Put features in plugins.</p>
+<p>The app kit being designed next (<code>chord/next/app</code>) will make the base code nearly empty: <code>startApp</code> and <code>startWorker</code>
+with Chord&#39;s conventions for hosts, users, authentication and storage, so an app is mostly plugins.</p>
+</section>
+
+<section class="chapter appendix" id="reference"><header class="opener"><div class="numeral">A</div><h2>Reference</h2></header>
+<table>
+<thead>
+<tr>
+<th>Call</th>
+<th>What it does</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>createHost&lt;P&gt;({ address?, principal?, store?, onError })</code></td>
+<td>a host: addressable with an address, else a client</td>
+</tr>
+<tr>
+<td><code>host.load([{ name, facet }], ctx)</code> / <code>host.reload(...)</code></td>
+<td>publish facets / apply a new plugin set</td>
+</tr>
+<tr>
+<td><code>host.get(Type, params, ctx)</code> / <code>host.hold(...)</code></td>
+<td>a live reference / a reference at once that follows its object</td>
+</tr>
+<tr>
+<td><code>local(name, { version, params, members })</code> / <code>remote(name, { version, params, hostAddress, variants })</code></td>
+<td>contracts</td>
+</tr>
+<tr>
+<td><code>defineFacet((host, self) =&gt; …)</code>, <code>host.serve(Type, factory)</code>, <code>self.contribute(R, value)</code></td>
+<td>a facet</td>
+</tr>
+<tr>
+<td>factory <code>self</code>: <code>state</code>, <code>derive</code>, <code>get</code>, <code>registry</code>, <code>open</code>, <code>on</code>, <code>onLive</code>, <code>job</code>, <code>tx</code></td>
+<td>an object&#39;s parts</td>
+</tr>
+<tr>
+<td><code>createPlugins({ roots, kinds, onError }, ctx)</code></td>
+<td>the plugins component</td>
+</tr>
+<tr>
+<td><code>plugins.load(host, { kind, core, modules }, ctx)</code>, <code>build(names)</code>, <code>rollout(steps, built)</code></td>
+<td>load, build, roll out</td>
+</tr>
+<tr>
+<td><code>hostKind(name, params?)</code>, <code>Kind(params)</code></td>
+<td>host kinds and addresses</td>
+</tr>
+</tbody></table>
+</section>
+
+<p class="colophon">Hosts and Plugins · first edition · 2026-10-31 · Chord v2 slices 1-10</p>
+</div></div>
+<script>(function activate(root) {
+	const replay = (f) => {
+		f.classList.remove("play");
+		void f.getBoundingClientRect();
+		f.classList.add("play");
+	};
+	const io = new IntersectionObserver(
+		(es) => {
+			for (const e of es)
+				if (e.isIntersecting) {
+					e.target.classList.add("play");
+					io.unobserve(e.target);
+				}
+		},
+		{ threshold: 0.3 },
+	);
+	root.querySelectorAll(".anim:not(.armed)").forEach((f) => {
+		f.classList.add("armed");
+		io.observe(f);
+		const b = f.querySelector(".replay");
+		if (b) b.onclick = () => replay(f);
+	});
+	root.querySelectorAll(".steps:not(.js)").forEach((s) => {
+		s.classList.add("js");
+		const ps = [...s.querySelectorAll(":scope>.step-panel")];
+		let i = 0;
+		const c = s.querySelector(".count"),
+			p = s.querySelector(".prev"),
+			n = s.querySelector(".next");
+		const show = () => {
+			ps.forEach((x, j) => x.classList.toggle("on", j === i));
+			c.textContent = `${i + 1} / ${ps.length}`;
+			p.disabled = i === 0;
+			n.disabled = i === ps.length - 1;
+			ps[i].querySelectorAll(".anim").forEach(replay);
+		};
+		p.onclick = () => {
+			i--;
+			show();
+		};
+		n.onclick = () => {
+			i++;
+			show();
+		};
+		show();
+	});
+})(document)</script>
+</body></html>
