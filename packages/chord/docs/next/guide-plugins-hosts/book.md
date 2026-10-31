@@ -33,7 +33,8 @@ This book builds the app in that order. Each chapter adds one concept and shows 
 ## Seven things to know
 
 :::findings
-1. **A host is one participant.** The server, each worker and each browser tab is a host; hosts connect over links.
+1. **A host is one participant.** The server, each worker, each browser tab and each terminal UI is a host; hosts
+   connect over links. Tabs and terminal UIs are clients: no address, they connect to the server and ask.
 2. **An object has a type, and a type is a contract.** The contract names the object's state and methods; any host can
    ask for an object by type and params, and Chord finds where it lives.
 3. **A facet declares, an object acts.** A facet is a plugin's code for one host kind: it says which object types this
@@ -46,6 +47,25 @@ This book builds the app in that order. Each chapter adds one concept and shows 
    contributes to a registry another defines. Nothing else crosses between plugins.
 7. **An edit is a rollout.** Change a file, build, roll out: the server, then every worker, swap the plugin's objects in
    place; a broken edit keeps the old code running and reports why.
+:::
+
+:::flow wide animate | How it all fits: plugins on disk are built once on the server; each host evaluates the facets of its kind; tabs and the TUI are clients that reach workers' objects through the server.
+row "On disk" muted
+box disk "plugins/notes/" "`server.ts`, `worker.ts`, `web.tsx`, `tui.ts`, `contract.ts`" muted
+box core "src/ (base code)" "`@app/core`: host kinds, principals" muted
+row "Server process" accent
+box comp "plugins component" "discover, build every facet, watch, roll out" accent
+box server "server host" "server facets; routes Project → workers"
+row "Clients and workers"
+box tab "client: tab or TUI" "web or tui facets, local UI objects; holds `Notes { p1 }`" blue
+box w1 "worker p1" "worker facets; serves `Notes { p1 }`"
+arrow disk -> comp "read, build"
+arrow core -> comp "host packages"
+arrow comp -> server "server scripts"
+arrow comp -> tab "web or tui scripts"
+arrow tab -> server "hold Notes { p1 }"
+arrow server -> w1 "start (worker scripts), relay"
+note "Each host loads only its own kind's facets. Plugins meet only through object types and registries."
 :::
 
 ## Words used throughout
@@ -161,6 +181,49 @@ Starting workers, routing a host kind to them, the WebSocket entry and authentic
 (`createWorkers`, `chord.http`), wired by the app. The opinionated app kit (`chord/next/app`, being designed) will do
 this wiring for you: `startApp(...)` and `startWorker()`.
 :::
+
+# Client Hosts {#clients lede="Browser tabs and terminal UIs are hosts too: what they can do, and what they cannot."}
+
+A browser tab and a terminal UI are hosts like the server, with one difference: they have **no address**. Nobody can
+send a request *to* a tab; a tab only connects to the server and asks for things. That is a deliberate rule: a tab
+runs on a device the server does not control, so nothing on the server ever waits for, or trusts, a tab's state.
+
+```ts
+// a browser tab (slice 11's page host will do this wiring for you)
+const tab = createHost<P>({ onError });                               // no address, no principal: a client
+tab.connect(webSocketLink(new WebSocket("/chord")), { principal: { kind: "server" } }, ctx);
+await tab.load([{ name: "@app/web", facet: webCore }, ...webFacets], ctx);
+
+const notes = tab.hold(Notes, { project: "p1" }, ctx);               // a reference at once, live soon
+(await notes.list.watch(ctx)).start(async (call) => {
+	if (call.kind === "value") render(call.value.items);              // every change, as it commits on the worker
+});
+await notes.add({ text: "from the tab" }, ctx);                        // a call: tab → server → worker
+```
+
+**Who the tab is** is not the tab's to say. The server authenticates the WebSocket when it connects (a cookie, the
+owner on loopback, a guest's share link) and stamps that principal on everything the tab asks for. The worker's
+`Notes` factory receives it and may give a guest a read-only variant. A tab cannot claim to be the owner.
+
+**What a tab serves** is only `local` types: state of this tab's UI, never shared. A draft that survives switching
+panels, a selection, a tab-local cache:
+
+```ts
+// plugins/notes/web.tsx: the web facet serves a local type, and contributes a panel
+export default defineFacet((host, self) => {
+	host.serve(NoteDraft, (_params, self) => ({ text: self.state(DraftDoc) }));   // lives in this tab only
+	self.contribute(Panels, { title: "Notes", Component: NotesPanel });
+});
+```
+
+**When the connection drops** (a phone in a tunnel, a server restart), the tab keeps its references. Their values
+stay readable, their `state` says `loading`, calls made meanwhile wait; on reconnect every reference is held again and
+gets the current value in one frame. The UI shows a banner from `ref.state`, nothing more.
+
+**A terminal UI** is the same in Node: a client host connected to the server over a WebSocket, loading the plugins'
+`tui` facets, rendering with whatever terminal library the app chose. **What a client never does**: serve a `remote`
+type, be routed to, or keep data others rely on. Data that must outlive a tab belongs in an object on the server or a
+worker.
 
 # Plugins {#plugins lede="Move the code into a directory that can be added, edited and removed while the app runs."}
 
