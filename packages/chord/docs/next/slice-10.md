@@ -213,7 +213,7 @@ await workerMain(async ({ address, start, parent, plugins, onClose }, ctx) => {
   a thin wrapper of the IPC link, so `connect` is the signal: the app connects before anything slow). `resolve` then
   returns `{ link, principal: principal(address), trusted: true }`, and the handshake and the worker's server traffic
   run during its `load`. The start timer (60 s from the fork) covers fork, lock and connect only (Q4): past it the tree is
-  killed and the start fails. `ready` (after the app's function returned, carrying the idle state) sets `state` to
+  killed and the start fails. `ready` (after the app's function returned, carrying the idle state and its load report) sets `state` to
   `running` and lets idle stops begin; a `load` that never ends shows `starting` until `stop`.
 - **Workers never restart by themselves** (R2): a crash (an exit nobody asked for), a `fatal`, a link lost while its
   child lives, or a failed start (`start` threw, the start timer, a lock not taken in time) leaves the address `failed`
@@ -252,7 +252,7 @@ await workerMain(async ({ address, start, parent, plugins, onClose }, ctx) => {
   `reloaded { report } | { error }`. One `reload` is outstanding per child at a time: a reload whose caller aborted
   keeps the child's slot until its `reloaded` or the child's exit, and the next waits for it. Errors cross as `{
   message, code?, reason? }`.
-- **Errors** (`onError`, `WorkersError`): `worker_failed { address, error, stderrTail? }`, `worker_exited { address,
+- **Errors** (`onError`, `WorkersError`, which includes `BatchError` for a `state` watch listener that throws): `worker_failed { address, error, stderrTail? }`, `worker_exited { address,
   code, signal }` (a clean exit after a stop is not reported).
 
 ### Plugins in workers (D11)
@@ -260,10 +260,12 @@ await workerMain(async ({ address, start, parent, plugins, onClose }, ctx) => {
 Workers never build. The plugins component (7c) gets `scripts(kind, ctx)`: the complete current set of one kind (every
 discovered plugin's facet of it, built on first use, then updated by every rollout that ships that kind), each with its
 plugin record (`name`, `dir`, `chord.external`). The component's per-host loading (its loaded map, `#prepare`, `adopt`,
-the queue per host) moves into a file without esbuild or the watcher, `createPluginRuntime({ hostPackages })`
-with `load(host, { kind, core, scripts }, ctx)` and `reload(host, scripts, ctx)` (a complete set: removed = loaded −
-shipped; same digests unchanged); `createPlugins` uses it, and the child's `plugins` is one (`import` of
-`chord/next/plugins/runtime` loads no esbuild).
+the queue per host) moves into a file without esbuild or the watcher, `createPluginRuntime()`
+with `load(host, { kind, core, scripts, modules }, ctx)` (`modules`: the host packages' module objects of this process) and `reload(host, scripts, ctx)` (a complete set: removed = loaded −
+shipped; same digests unchanged); `createPlugins` uses it, and the child's `plugins` is a `WorkerPlugins` over one
+(`load(host, { kind, core })` loads the start message's scripts; `reload` messages wait until `fn` returned); `import`
+of `chord/next/plugins/runtime` loads no esbuild. Each kind is defined once in `createPlugins({ kinds: { <kind>: {
+platform, hostPackages } } })` (decision "Slice 11's points", Kinds).
 
 ## 4. The rollout across server and workers
 
