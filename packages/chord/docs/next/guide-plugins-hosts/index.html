@@ -457,9 +457,9 @@ script&#39;s default export must be a facet.</p>
 evaluation or setup failed is left out and listed in <code>report.failed</code> with the reason; the others load. Objects that
 need it wait until a later edit loads it.</p>
 </div></div>
-<p>A worker never builds. The server builds the worker kind too and sends the scripts in the worker&#39;s start message; the
-worker only evaluates, with its own modules. A page gets its scripts from the server over HTTP and evaluates them with
-the modules of its base bundle.</p>
+<p>Only the server builds. Workers and clients (browser tabs, terminal UIs) only evaluate: the server builds their kinds
+too, a worker gets its scripts in its start message, a tab or a TUI gets them from the server over HTTP, and each
+evaluates them with its own modules (a worker&#39;s from <code>workerMain</code>, a page&#39;s from its base bundle).</p>
 </section>
 
 <section class="chapter" id="together"><header class="opener"><div class="numeral">VII</div><h2>Plugins Using Plugins</h2><p class="lede">Two ways one plugin uses another, and the one it may not.</p></header>

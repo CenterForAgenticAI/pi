@@ -480,9 +480,9 @@ evaluation or setup failed is left out and listed in `report.failed` with the re
 need it wait until a later edit loads it.
 :::
 
-A worker never builds. The server builds the worker kind too and sends the scripts in the worker's start message; the
-worker only evaluates, with its own modules. A page gets its scripts from the server over HTTP and evaluates them with
-the modules of its base bundle.
+Only the server builds. Workers and clients (browser tabs, terminal UIs) only evaluate: the server builds their kinds
+too, a worker gets its scripts in its start message, a tab or a TUI gets them from the server over HTTP, and each
+evaluates them with its own modules (a worker's from `workerMain`, a page's from its base bundle).
 
 # Plugins Using Plugins {#together lede="Two ways one plugin uses another, and the one it may not."}
 
