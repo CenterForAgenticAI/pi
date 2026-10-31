@@ -371,35 +371,95 @@ out; every host passes its own copy in). It holds what plugins share and never r
 type, a <code>defineFacet</code> bound to it.</p>
 </section>
 
-<section class="chapter" id="loading"><header class="opener"><div class="numeral">VI</div><h2>Loading Plugins</h2><p class="lede">Discover, build, evaluate, load: what happens between a directory and a running object.</p></header>
-<p class="dropcap">The <strong>plugins component</strong> does the work. You tell it where plugins are and what each host kind needs:</p>
+<section class="chapter" id="loading"><header class="opener"><div class="numeral">VI</div><h2>Loading Plugins</h2><p class="lede">Two steps in two places: building a plugin into a script happens once, on the server; evaluating it happens in every process that runs it.</p></header>
+<p class="dropcap">A plugin is source code on the server&#39;s disk: TypeScript files that import each other, import other plugins&#39;
+contracts, import npm packages, and import things the app itself provides. None of the processes that run the plugin
+can use those files as they are. A browser tab has no file system and no TypeScript; a worker could read the files,
+but then every worker would compile every plugin again, and two workers started a minute apart could see two different
+versions. So loading a plugin is two separate steps:</p>
+<ol>
+<li><strong>Build</strong>: turn each plugin facet (<code>notes/worker.ts</code>, <code>notes/web.tsx</code>) into one self-contained <strong>script</strong>. This
+happens once per edit, on the server, for every host kind.</li>
+<li><strong>Evaluate</strong>: run a script inside one process, which gives back the facet, ready for <code>host.load</code>. This happens in
+every process that hosts that kind: the server for its own facets, each worker for the worker facets, each tab for
+the web facets.</li>
+</ol>
+<p>The two steps need different things, and that is why the API has two calls.</p>
+<h3 id="host-packages-what-a-script-leaves-out">Host packages: what a script leaves out</h3>
+<p>Look at what <code>notes/worker.ts</code> imports:</p>
+<pre><code><span class="tk-k">import</span> { defineFacet, <span class="tk-t">Session</span> } <span class="tk-k">from</span> <span class="tk-s">"@app/core"</span>;             <span class="tk-c">// the app's base code</span>
+<span class="tk-k">import</span> { obj, str, remote } <span class="tk-k">from</span> <span class="tk-s">"@earendil-works/chord/next"</span>;  <span class="tk-c">// Chord itself</span>
+<span class="tk-k">import</span> { <span class="tk-t">Notes</span> } <span class="tk-k">from</span> <span class="tk-s">"./contract.ts"</span>;                            <span class="tk-c">// the plugin's own file</span>
+<span class="tk-k">import</span> slugify <span class="tk-k">from</span> <span class="tk-s">"slugify"</span>;                                    <span class="tk-c">// an npm package in the plugin's dependencies</span></code></pre>
+<p>The last two go into the script: the plugin&#39;s own files and its npm dependencies are copied in. The first two must
+not. If the script carried its own copy of Chord, the worker would run two Chords: the plugin&#39;s <code>ChordError</code> would not
+be the worker&#39;s <code>ChordError</code>, and the plugin&#39;s <code>defineFacet</code> would make a facet the worker&#39;s host does not recognize.
+The same holds for <code>@app/core</code>: the plugin must see the very <code>Session</code> host kind and the very <code>Panels</code> registry the
+process already has, not a copy.</p>
+<p>Packages the process already has, and that every plugin must share, are its <strong>host packages</strong>. A script leaves them
+out and asks for them by name when it runs. Building therefore needs only their <strong>names</strong>: &quot;do not copy
+<code>@earendil-works/chord/next</code> or <code>@app/core</code> into this script&quot;.</p>
+<h3 id="building-createplugins-on-the-server">Building: <code>createPlugins</code>, on the server</h3>
 <pre><code><span class="tk-k">const</span> plugins = <span class="tk-f">createPlugins</span>({
-	roots: [<span class="tk-s">"./plugins"</span>],
+	roots: [<span class="tk-s">"./plugins"</span>],                                 <span class="tk-c">// where the plugin directories are</span>
 	kinds: {
 		server: { platform: <span class="tk-s">"node"</span>, hostPackages: [<span class="tk-s">"@earendil-works/chord/next"</span>, <span class="tk-s">"@app/core"</span>] },
 		worker: { platform: <span class="tk-s">"node"</span>, hostPackages: [<span class="tk-s">"@earendil-works/chord/next"</span>, <span class="tk-s">"@app/core"</span>] },
 		web: { platform: <span class="tk-s">"browser"</span>, hostPackages: [<span class="tk-s">"@earendil-works/chord/next"</span>, <span class="tk-s">"@app/core"</span>, <span class="tk-s">"react"</span>, <span class="tk-s">"react/jsx-runtime"</span>] },
 	},
 	onError,
-}, ctx);
+}, ctx);</code></pre>
+<p><code>createPlugins</code> is the builder, and it builds for every kind, because only the server has the sources. For each kind
+it needs two facts. The <strong>platform</strong> says where the scripts run: a <code>node</code> script may import <code>node:fs</code>, a <code>browser</code>
+script may import a stylesheet but not <code>node:fs</code>. The <strong>host package names</strong> say what to leave out; they differ per
+kind, because a tab also shares React with its plugins and a worker does not. Nothing here runs a plugin.</p>
+<h3 id="evaluating-plugins-load-in-the-process-that-hosts">Evaluating: <code>plugins.load</code>, in the process that hosts</h3>
+<p>Evaluating is where the names become things. When the script runs and asks for <code>@app/core</code>, someone has to hand it
+the actual module, the one this process imported when it started. Only the process itself has it:</p>
+<pre><code><span class="tk-c">// server.ts</span>
+<span class="tk-k">import</span> * <span class="tk-k">as</span> chord <span class="tk-k">from</span> <span class="tk-s">"@earendil-works/chord/next"</span>;
+<span class="tk-k">import</span> * <span class="tk-k">as</span> core <span class="tk-k">from</span> <span class="tk-s">"./core.ts"</span>;                         <span class="tk-c">// the app's base code, the same module plugins import as "@app/core"</span>
 
 <span class="tk-k">const</span> report = <span class="tk-k">await</span> plugins.<span class="tk-f">load</span>(server, {
-	kind: <span class="tk-s">"server"</span>,
-	core: [{ name: <span class="tk-s">"@app/core"</span>, facet: coreServerFacet }],
-	modules: { <span class="tk-s">"@earendil-works/chord/next"</span>: chord, <span class="tk-s">"@app/core"</span>: core },
-}, ctx);
-console.<span class="tk-f">log</span>(report.failed);   <span class="tk-c">// plugins left out, with why: [] when all loaded</span></code></pre>
-<div class="steps"><div class="steps-head"><span class="title">What <code>plugins.load</code> does</span><span class="count"></span><button class="prev" type="button">Back</button><button class="next" type="button">Next</button></div><div class="step-panel"><h4>Discover</h4><p>It lists <code>./plugins</code> one level deep and reads each <code>package.json</code>. A directory without one, or with two <code>server</code>
-files, is reported, not loaded.</p>
-</div><div class="step-panel"><h4>Build</h4><p>For each plugin with a <code>server</code> facet, esbuild builds one script from <code>server.ts</code> and everything it imports: the
-plugin&#39;s own files, another plugin&#39;s contract files, its npm dependencies. Host packages stay out. A syntax error is a
-build failure, never a crash.</p>
-</div><div class="step-panel"><h4>Evaluate</h4><p>The script runs and returns the facet. Its <code>import &quot;@app/core&quot;</code> gets the server&#39;s own <code>@app/core</code>, so a <code>ChordError</code>
-from a plugin is the same class as the server&#39;s.</p>
-</div><div class="step-panel"><h4>Load</h4><p><code>host.load</code> runs every facet&#39;s setup and publishes all of them at once. A plugin whose build, evaluation or setup
-fails is left out and listed in <code>report.failed</code>; the others load. Its objects&#39; users wait, and the next edit loads it.</p>
+	kind: <span class="tk-s">"server"</span>,                                          <span class="tk-c">// evaluate the server kind's scripts</span>
+	modules: { <span class="tk-s">"@earendil-works/chord/next"</span>: chord, <span class="tk-s">"@app/core"</span>: core },   <span class="tk-c">// this process's own instances</span>
+	core: [{ name: <span class="tk-s">"@app/core"</span>, facet: core.serverFacet }],  <span class="tk-c">// base-code facets, loaded beside the plugins</span>
+}, ctx);</code></pre>
+<p><code>modules</code> is this process&#39;s answer to every host package name. The server passes its own; a worker passes its own in
+<code>workerMain</code>; a page passes its own in <code>startPage</code>. Each process has different instances, which is exactly the point:
+inside each process, plugins share that process&#39;s Chord and base code.</p>
+<p><code>core</code> is the app&#39;s base code in facet form. It is a facet like a plugin&#39;s, but it is not a plugin: it is made in the
+process&#39;s own code, often from values only this process has (<code>core.workerFacet(start)</code> closes over a worker&#39;s start
+data and store), and it never reloads, because it defines what all plugins share. Passing it here loads it together
+with the plugins, so they are published in one step.</p>
+<h3 id="why-plugins-load-host-not-host-load">Why <code>plugins.load(host)</code>, not <code>host.load</code></h3>
+<p>A host has its own <code>load</code>, and <code>plugins.load</code> calls it. The host&#39;s <code>load</code> takes facets that already exist: functions
+in memory. It knows nothing about directories, builds, scripts or modules, on purpose: the same host runs in a test
+with facets imported directly, or in a Cloudflare Durable Object where plugins are bundled at deploy time and nothing
+is built or evaluated at runtime.</p>
+<p>The plugins component is the part that knows about directories. It finds the plugins, builds them, evaluates them
+with the process&#39;s modules, and then calls <code>host.load</code> with the result. It also remembers, per host, which facet each
+plugin runs, so that a later reload can hand the host its complete new plugin set, with unchanged plugins as the very
+same objects. That memory is why the host is passed to it: <code>plugins.load(server, …)</code> on the server,
+<code>plugins.load(worker, …)</code> in a worker (where <code>workerMain</code> gives it a <code>plugins</code> that only evaluates), the same call
+in every process.</p>
+<figure class="fig wide"><svg viewBox="0 0 720 242" width="100%" role="img" aria-label="Building on the server needs names; evaluating in each process needs that process's modules." xmlns="http://www.w3.org/2000/svg" style="font-family:'Avenir Next','Helvetica Neue',Helvetica,Arial,sans-serif;max-width:760px"><defs><marker id="f3m" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#7b7468"/></marker><marker id="f3a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#b4472f"/></marker><marker id="f3b" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#2e6a8a"/></marker></defs><text x="16" y="22" font-size="10" fill="#b4472f" text-anchor="start" font-weight="600" letter-spacing="2">SERVER: BUILD (ONCE PER EDIT)</text><text x="16" y="155" font-size="10" fill="#2e6a8a" text-anchor="start" font-weight="600" letter-spacing="2">EACH WORKER: EVALUATE</text><rect x="19" y="36" width="210" height="55" rx="4" fill="#efe9dd" stroke="#c9bfae"/><text x="124" y="54.5" font-size="11" fill="#2a2723" text-anchor="middle">plugin sources</text><text x="124" y="68.5" font-size="9.5" fill="#7b7468" text-anchor="middle" font-family="Menlo,monospace">notes/worker.ts`, imports</text><text x="124" y="81" font-size="9.5" fill="#7b7468" text-anchor="middle" font-family="Menlo,monospace">`@app/core</text><rect x="255" y="36" width="210" height="55" rx="4" fill="#fff" stroke="#b4472f" stroke-width="1.5"/><text x="360" y="54.5" font-size="11" fill="#2a2723" text-anchor="middle">createPlugins</text><text x="360" y="68.5" font-size="9.5" fill="#7b7468" text-anchor="middle">copies own files and npm deps; leaves</text><text x="360" y="81" font-size="9.5" fill="#7b7468" text-anchor="middle">host packages out</text><rect x="491" y="36" width="210" height="55" rx="4" fill="#fff" stroke="#c9bfae"/><text x="596" y="60.8" font-size="11" fill="#2a2723" text-anchor="middle">worker script</text><text x="596" y="74.8" font-size="9.5" fill="#7b7468" text-anchor="middle">`require(&quot;@app/core&quot;)` left as a name</text><rect x="19" y="169" width="210" height="55" rx="4" fill="#efe9dd" stroke="#c9bfae"/><text x="124" y="193.8" font-size="11" fill="#2a2723" text-anchor="middle">the worker's modules</text><text x="124" y="207.8" font-size="9.5" fill="#7b7468" text-anchor="middle">its own `@app/core`, its own Chord</text><rect x="255" y="169" width="210" height="55" rx="4" fill="#fff" stroke="#2e6a8a" stroke-width="1.5"/><text x="360" y="193.8" font-size="11" fill="#2a2723" text-anchor="middle">plugins.load(worker, …)</text><text x="360" y="207.8" font-size="9.5" fill="#7b7468" text-anchor="middle">runs the script, answers each name</text><rect x="491" y="169" width="210" height="55" rx="4" fill="#fff" stroke="#c9bfae"/><text x="596" y="187.5" font-size="11" fill="#2a2723" text-anchor="middle">the facet</text><text x="596" y="201.5" font-size="9.5" fill="#7b7468" text-anchor="middle">uses the worker's `Session`, the</text><text x="596" y="214" font-size="9.5" fill="#7b7468" text-anchor="middle">worker's `defineFacet`</text><path d="M229 63.5 L253 63.5" fill="none" stroke="#7b7468" marker-end="url(#f3m)"/><path d="M465 63.5 L489 63.5" fill="none" stroke="#7b7468" marker-end="url(#f3m)"/><path d="M596 91 L360 167" fill="none" stroke="#7b7468" marker-end="url(#f3m)"/><rect x="482" y="123" width="44.9" height="13" fill="#fbf8f2" opacity=".92"/><text x="486" y="133" font-size="9.5" fill="#7b7468" text-anchor="start">shipped</text><path d="M229 196.5 L253 196.5" fill="none" stroke="#7b7468" marker-end="url(#f3m)"/><path d="M465 196.5 L489 196.5" fill="none" stroke="#7b7468" marker-end="url(#f3m)"/></svg><figcaption><span class="fignum">Figure 3.</span> Building on the server needs names; evaluating in each process needs that process&#39;s modules.</figcaption></figure>
+<h3 id="what-happens-step-by-step">What happens, step by step</h3>
+<div class="steps"><div class="steps-head"><span class="title"><code>plugins.load(server, { kind: &quot;server&quot;, … })</code></span><span class="count"></span><button class="prev" type="button">Back</button><button class="next" type="button">Next</button></div><div class="step-panel"><h4>Discover</h4><p>The component lists <code>./plugins</code> one level deep and reads each <code>package.json</code>. Its <code>name</code> is the plugin&#39;s name; the
+files named after a kind are its facets. A directory without a <code>package.json</code>, or with two <code>server</code> files, is reported,
+not loaded.</p>
+</div><div class="step-panel"><h4>Build</h4><p>For each plugin with a <code>server</code> facet it builds one script, if no current one exists. A syntax error or an import the
+rules do not allow (a path into base code, a package not in the plugin&#39;s dependencies) is a failed build with the file
+and line, never a crash.</p>
+</div><div class="step-panel"><h4>Evaluate</h4><p>The script runs. Each host package name it asks for is answered from <code>modules</code>; anything else it may not have. The
+script&#39;s default export must be a facet.</p>
+</div><div class="step-panel"><h4>Load</h4><p><code>host.load</code> runs the setups of <code>core</code> and of every plugin facet and publishes them together. A plugin whose build,
+evaluation or setup failed is left out and listed in <code>report.failed</code> with the reason; the others load. Objects that
+need it wait until a later edit loads it.</p>
 </div></div>
-<p>A worker never builds: the server builds the worker facets too, and each worker evaluates the scripts it is sent.</p>
+<p>A worker never builds. The server builds the worker kind too and sends the scripts in the worker&#39;s start message; the
+worker only evaluates, with its own modules. A page gets its scripts from the server over HTTP and evaluates them with
+the modules of its base bundle.</p>
 </section>
 
 <section class="chapter" id="together"><header class="opener"><div class="numeral">VII</div><h2>Plugins Using Plugins</h2><p class="lede">Two ways one plugin uses another, and the one it may not.</p></header>
