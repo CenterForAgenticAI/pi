@@ -74,7 +74,9 @@ A **host** is one participant of the app, made with `createHost`. A **host kind*
 addressable hosts; an **address** (`Session({ id: "p1" })`) names one. An **object type** is a contract: `local` (used
 on its own host only) or `remote` (used from any host). An **object** is one instance of a type, per params. A
 **facet** is a plugin's declarations for one host kind. A **plugin** is a directory with a `package.json`. A
-**reference** is what you get when you ask for an object (`host.get`, `self.get`, `ctx.get`). A **registry** is an
+**reference** is what you get when you ask for an object (`host.get`, `self.get`, `ctx.get`). A **document** is data an object
+stores, changed in **transactions**; a **derive** is a value computed from others; a **native** is an outside
+resource an object opens and closes. A **registry** is an
 extension point: one plugin defines it, others contribute. A **rollout** applies a build to the hosts in order.
 
 # One Host {#host lede="The smallest app: one process, one object type, one call."}
@@ -118,15 +120,66 @@ console.log(notes.list.value);                          // { items: ["buy milk"]
 ```
 
 Four things happened. The **contract** `Notes` says what the object offers; the **document** says what it stores.
-Here they have the same shape, so one schema serves both; they are separate because they change separately (a
-derive or a guest's redacted view offers something other than storage, and storage can migrate without users
-noticing).
+Here they have the same shape, so one schema serves both; they are separate because they change separately (an
+object may offer a computed value or a shortened view instead of what it stores, and storage can change its shape
+without users noticing).
 The **facet** says this host serves
 `Notes`, with a **factory** that declares the object's parts: a document, and a method writing it in a transaction.
 `load` publishes the facet. `get` returns a **reference** once the object is live; its members are the contract's.
 
 The factory only declares: it is synchronous and opens nothing. Chord activates the object (loads its documents, opens
 what it asked to open) and then serves calls. That is why the same factory can run again when the code changes.
+
+# An Object's Parts {#parts lede="Documents, transactions, computed values, watching, and outside resources: the vocabulary of every factory."}
+
+A factory builds an object from a handful of parts, each declared with one call on `self`. The notes object grows to
+show all of them.
+
+**Documents** hold the object's data: `self.state(NotesDoc)` gives a handle whose `.value` is the current data. Data
+changes only in a **transaction**: `self.tx(fn, ctx)` runs `fn` with `tx`, and `await tx.draft(handle)` gives a
+mutable copy of the document's data; whatever you change on it is committed at once when `fn` returns, or not at all
+if it throws.
+
+```ts
+add: async ({ text }, ctx) => self.tx(async (tx) => {
+	const draft = await tx.draft(doc);          // the document's data, writable inside this transaction only
+	draft.items.push(text);                      // recorded as a change, committed when the function returns
+}, ctx),
+```
+
+A **derive** is a value computed from other values, recomputed whenever they change. It is how an object offers
+something it does not store:
+
+```ts
+const count = self.derive([doc], ([notes]) => notes.items.length);   // 0, 1, 2, … as notes are added
+return { list: doc, count, add };                                      // `count` can be a member like `list`
+```
+
+**Watching** is how anyone follows a value as it changes: a document handle, a derive, a reference's member. `watch`
+gives the current value, then one call per change:
+
+```ts
+const watch = await notes.count.watch(ctx);
+watch.start(async (call) => {
+	if (call.kind === "value") console.log("notes:", call.value);   // "failed" calls say a value cannot be computed now
+});
+```
+
+A **routine** is the object watching on its own behalf: `self.on(source, fn)` runs `fn` with each new value, for as
+long as the object lives (a reconciler: "whenever the notes change, rebuild the export file").
+
+A **native** is something outside Chord the object opens and must close: a file watcher, a database connection, a
+child process. `self.open(open, close)` opens it while the object activates and closes it when the object ends:
+
+```ts
+const inbox = self.open(async (ctx) => watchDirectory(inboxPath, ctx.abortSignal), (watcher) => watcher.close());
+self.onLive(async (ctx) => {                                  // a routine started once the object is live
+	for await (const file of inbox.value.files(ctx.abortSignal)) await importNote(file, ctx);
+});
+```
+
+Natives are why some objects restart when their plugin changes: an open connection cannot be moved to new code, so
+Chord closes it and opens it again. Objects without natives are swapped in place.
 
 # Several Hosts {#hosts lede="A server, a worker per project, browser tabs: how they find each other's objects."}
 
@@ -145,7 +198,11 @@ export const Notes = remote("notes", {
 });
 ```
 
-`hostAddress` is the whole routing story. A tab asks for `Notes { project: "p1" }`. Its host computes the address,
+Two things are new. A `remote` type can be used from any host, and it has **variants**: different sets of members
+for different callers, chosen by the factory (an `editor` variant with `add`, a `reader` variant for guests without
+it). And `hostAddress` says where its objects live; it is the whole routing story.
+
+A tab asks for `Notes { project: "p1" }`. Its host computes the address,
 `Project(p1)`, and sends the request to its parent, the server. The server has a **route** for `Project`: it starts (or
 finds) the worker for `p1` and passes the request on. The worker serves `Notes`. The tab gets a reference whose state
 follows the worker's document, one frame per change.
