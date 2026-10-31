@@ -2070,6 +2070,15 @@ validation and copies the v2 kernel added around Delta.
   a build error naming it; relative paths into another plugin's directory are refused. Owner's notes for the app kit
   pass: third-party plugins need the imported plugins' sources or types for type checking (publishing each plugin to
   npm works but is unpleasant); plugins should be testable on their own, with their dependencies mocked.
+- **The HTTP core is a `fetch` handler; Chord's own Node server is the easy path (owner, 2026-10-31: "could http just plug
+  into hono/express?"; "we should still provide the easy path using just node's shit as well, for small apps or apps
+  where we don't care"):** the component builds one Web-standard handler, `(request: Request) => Promise<Response>`,
+  from `Http` (admission, the security baseline, router, wraps, descriptions), plus per-runtime upgrade adapters for
+  `/chord` and plugin sockets. The default is Chord's own listener, the native host-lifetime object of `chord.http`
+  over Node's `http` (decision "The HTTP server is a native object"); an app with its own server mounts the handler
+  (`hono.all("/*", (c) => http.fetch(c.req.raw))`, an Express adapter) and passes upgrades to the adapter. The same
+  routes then run on other runtimes later (Bun, Durable Objects, design §26 #16). Built in slice 10's fix round
+  (reworks `server.ts`, `request.ts`, `response.ts`; router, admission rules and descriptions stay).
 - **A plugin's npm dependencies are bundled; external only by opt-in (owner, 2026-10-29: "explicit opt in + (a)"):**
   a plugin's `dependencies` are installed into its own `node_modules` (`npm install --ignore-scripts`) and bundled into
   each facet that imports them (host packages, its `peerDependencies`, stay external and are passed in). On Node a
