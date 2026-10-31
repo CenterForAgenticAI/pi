@@ -1,6 +1,6 @@
 # Slice 10: HTTP and workers (spec)
 
-Status: **ready for the owner's approval** (owner, 2026-10-30: D1-D12, D10b, round 1's R1-R6 and round 2's Q1-Q6 in the
+Status: **approved, building** (owner, 2026-10-30: "just build it";  D1-D12, D10b, round 1's R1-R6 and round 2's Q1-Q6 in the
 decision "Slice 10's points"; spec reviews round 1 by Fable and Opus, `/tmp/s10-spec-review-{fable,opus}.md`, round 2
 by Fable, Opus, Astra and Sol, `/tmp/s10-spec-review2-*.md`, folded in).
 Slice 10 builds two Node components of the app kit (decision "Slice 7b's open points" (6)): `chord/next/http` (the
