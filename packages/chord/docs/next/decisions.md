@@ -2084,6 +2084,11 @@ validation and copies the v2 kernel added around Delta.
   is trusted (a plugin's own file). (2) The worker lock on macOS and the BSDs fails closed on a stale lock file, with an
   error naming it (no takeover; Linux and Android use abstract sockets and are unaffected). (3) A route's overhead:
   Opus's two trims, measured again after the `fetch` rework, and the numbers brought to the owner.
+- **Slice 10: a route's overhead accepted; no header accessor (owner, 2026-10-31: "1 yes, 2 no"):** after the `fetch`
+  rework and the Node fast path a route costs +20-21 µs over a plain Node handler on the standard bench, +12-13 µs warmed
+  (before the rework +4.5 µs): the request's scope (2.1 µs), URL parsing, admission and routing, the baseline's headers,
+  the scope's seal, and about 5 µs of Node's microtask machinery an async path triggers. Accepted against the 10% bar.
+  No `request.header(name)` accessor: an authenticator reading headers builds the Web `Request` (about 3.5 µs more).
 - **A plugin's npm dependencies are bundled; external only by opt-in (owner, 2026-10-29: "explicit opt in + (a)"):**
   a plugin's `dependencies` are installed into its own `node_modules` (`npm install --ignore-scripts`) and bundled into
   each facet that imports them (host packages, its `peerDependencies`, stay external and are passed in). On Node a
