@@ -314,7 +314,8 @@ host.route(Session, {
   (R1) stops resolving an address (its holders stay `loading`) until `retry`. A network route that wants to reconnect
   keeps its own policy in its `resolve`. The workers component answers a failed address's `resolve` with its stored
   failure at once: workers never restart by themselves (§23).
-- Chord never closes a route link itself except at `host.close`; stopping idle workers is the app's (`host.activity`).
+- Chord closes a route link itself only at `host.close`, on the heartbeat and on a protocol error; stopping idle
+  workers is the app's (`host.activity`, the workers component, §23).
 - Work arriving on a route's links runs under the context given to `host.route(Kind, options, context)` (slice 4b).
 
 ### Links
@@ -2110,8 +2111,10 @@ public API; nothing in the kernel depends on them.
 
 ### HTTP (`@earendil-works/chord/next/http`)
 
-`httpServer(host, { listen, authenticate, headers?, links? }, ctx)` listens first, holds every request and upgrade
-until `load` resolved, then serves. `authenticate(request, ctx) => P | undefined` is the app's one hook (D3: who a
+`httpServer(host, { listen, allowedHosts?, authenticate, headers?, links?, closeTimeout?, onError }, ctx)` listens
+first; requests and upgrades wait only for the router's publication (`host.registry(Http)`, resolved once), never for
+the start barrier. `Host` (loopback or allowed: the option plus contributed `hosts`) and an upgrade's `Origin` are
+checked before anything else (R4); connections through a host no longer allowed close. `authenticate(request, ctx) => P | undefined` is the app's one hook (D3: who a
 request is, and which credential wins, is app policy; no Chord registry of resolvers); `headers` are added to every
 response, also those no route makes; `links.path` (`/chord`) upgrades to `host.accept(webSocketLink(ws), { principal,
 limits })`, a socket without a principal refused. `ws` is an optional peer dependency (D7).
@@ -2128,7 +2131,7 @@ router as it was when it started.
 ```ts
 type HttpResponse = { readonly headers?: Readonly<Record<string, string>> } & (           // D5
   | { kind: "json"; value: JsonValue; status?: number } | { kind: "html"; body: string; status?: number }
-  | { kind: "bytes"; mime: string; size: number; read(offset, length, ctx): Promise<Uint8Array>; download?: string; ranges?: boolean }
+  | { kind: "bytes"; mime: string; size?: number; read(offset, length, ctx): Promise<Uint8Array>; download?: string; ranges?: boolean }   // no size: chunked (R6)
   | { kind: "redirect"; to: string; status?: 302 | 303 | 307 } | { kind: "error"; status: number; message?: string });
 ```
 
@@ -2149,19 +2152,24 @@ Wraps (D2) run within a phase in contributor order (no numeric priorities: plugi
 order; Fastify's lifecycle phases and encapsulation are the model). Wraps may add a security boundary on top of a
 route's checks, never instead of them. `sockets` (D6): `{ "/terminal": (socket, req, ctx) => … }`, a `ws` WebSocket
 after the origin check and `authenticate` (no principal: 403 before plugin code), for a plugin's own protocol; wraps do
-not apply.
+not apply; closed (1012) when the contribution that handed them out leaves the table (§17).
 
 ### Workers (`@earendil-works/chord/next/workers`)
 
-`createWorkers(host, Kind, { entry, start, plugins, idleMs?, onOutput? }, ctx)` routes `Kind` itself (a forked worker per
-address, IPC, a start message with the app's start data and the worker kind's built scripts, `ready` within 60 s), a
-`state` watchable per address and `stop(address)`; `workerMain(fn)` is the child's side. One live worker per address
-(a kernel lock taken by the child before it opens its store). Keep-alive (D9, R3): the child reports when `host.activity`
-and the app's `busy` counts flip between all zero and not; the server stops a worker idle (all zero) for `idleMs` (5 min). Workers start on demand and
-never restart by themselves (R2): a crash or a failed start leaves the address failed with its error until
-`workers.retry(address)` or a rollout reaching workers; `workers.stop` suspends the address (R1). Workers never build (D11): the server's plugins
-component builds every plugin; workers evaluate shipped scripts, and `workers.step(name)` ships a rollout's scripts to
-every running worker (D12: one report per host).
+`createWorkers(host, Kind, { kind, entry, start, plugins, lock, idleMs?, onOutput?, onError }, ctx)` routes `Kind`
+itself (a forked worker per address over IPC, the link made at the fork, a start message with the app's start data and
+the worker kind's complete scripts; the 60 s start timer covers fork, lock and connect only, Q4), with a `state`
+watchable per address, `stop`, `retry` and `close`; `workerMain(fn, { hostPackages, redact, onError })` is the child's
+side. One live worker per address (a kernel lock the child takes, waiting for a draining old worker without polling).
+Keep-alive (D9, R3, Q5): the child reports when `host.activity`'s references, jobs and lingering objects and the app's
+`busy` counts flip between all zero and not (local calls do not count; the first state with `ready`); the server stops
+a worker idle (all zero) for `idleMs` (5 min). Workers start on demand and never restart by themselves (R2): a crash,
+a `fatal`, a link lost while its child lives (killed after the grace) or a failed start leaves the address failed with
+its error; its holders see `failed { waiting }` and stay on the path (Q1); `workers.retry(address)` or a rollout
+reaching workers clears it and starts the held ones (Q2). `workers.stop` suspends the address while it has holders
+(R1, Q3). Workers never build (D11): the server's plugins component builds every plugin; workers evaluate shipped
+complete sets (`createPluginRuntime`, no esbuild), and `workers.step(name)` ships a rollout's set to every worker (D12:
+one result per host; a worker stopped cleanly during it is listed `stopped`).
 
 ### Channels
 
