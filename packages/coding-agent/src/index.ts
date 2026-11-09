@@ -167,6 +167,8 @@ export type {
 	SessionShutdownEvent,
 	SessionStartEvent,
 	SessionTreeEvent,
+	ShortcutConflict,
+	ShortcutConflictKind,
 	SlashCommandInfo,
 	SlashCommandSource,
 	SourceInfo,
